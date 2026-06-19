@@ -74,8 +74,7 @@ public class CameraNotificationProvider : NotificationProviderBase
         {
             Channel(ChannelId).ShowNotification(new NotificationRequest
             {
-                MaskContent = NotificationContent.CreateSimpleTextContent(text, c => c.Color = brush),
-                OverlayContent = NotificationContent.CreateSimpleTextContent(text, c =>
+                MaskContent = NotificationContent.CreateSimpleTextContent(text, c =>
                 {
                     c.Color = brush;
                     c.Duration = duration;
