@@ -1,0 +1,9 @@
+# 插件清单文件（YAML）。字段格式见 ClassIsland 文档。
+id: privacy.island
+name: PrivacyIsland
+description: 拦截希沃摄像头访问，强制延迟并通过 ClassIsland 提醒与自动化提供控制（NoMoreMonitor 移植）。
+entranceAssembly: "PrivacyIsland.dll"
+url: https://github.com/SakuraStar/NoMoreMonitor
+version: 0.1.0.0
+apiVersion: 2.0.0.0
+author: SakuraStar

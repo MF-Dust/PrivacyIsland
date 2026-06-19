@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="PrivacyIsland/PrivacyIsland.csproj" />
+  <Project Path="PrivacyIsland.SmokeTest/PrivacyIsland.SmokeTest.csproj" />
+</Solution>

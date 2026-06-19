@@ -1,0 +1,29 @@
+# Visual Studio / editor state
+.vs/
+.user
+*.user
+*.suo
+
+# .NET build output
+bin/
+obj/
+
+# Native build output
+Debug/
+Release/
+x64/
+x86/
+*.obj
+*.pdb
+*.idb
+*.tlog
+*.lastbuildstate
+*.log
+
+# ClassIsland package output
+cipx/
+*.cipx
+
+# Local agent state
+.claude/
+.antigravitycli/

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<Nullable>enable</Nullable>
+		<UseWPF>true</UseWPF>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<EnableDynamicLoading>True</EnableDynamicLoading>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="ClassIsland.PluginSdk" Version="2.1.0">
+			<ExcludeAssets>runtime; native</ExcludeAssets>
+		</PackageReference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Update="manifest.yml">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<!-- 随插件分发的原生件（x86 Release）：hook DLL + 注入器 helper。
+	     注入器必须是 x86 才能注入 32 位 media_capture.exe。 -->
+	<ItemGroup>
+		<None Include="Native\NoMoreMonitor_Dll.dll" Link="NoMoreMonitor_Dll.dll">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Include="Native\nmm_injector.exe" Link="nmm_injector.exe">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+</Project>
