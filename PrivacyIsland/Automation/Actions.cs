@@ -1,5 +1,6 @@
 using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace PrivacyIsland.Automation;
 
@@ -39,5 +40,26 @@ public class EjectNowAction : ActionBase<EmptyConfig>
     {
         await base.OnInvoke();
         PrivacyIslandRuntime.EjectNow();
+    }
+}
+
+/// <summary>"立即设定延迟"行动的配置：写入的随机延迟上下限（秒）。</summary>
+public class DelayActionConfig : ObservableObject
+{
+    int _min = 10;
+    int _max = 20;
+
+    public int Min { get => _min; set => SetProperty(ref _min, value); }
+    public int Max { get => _max; set => SetProperty(ref _max, value); }
+}
+
+/// <summary>把基准随机延迟设为指定上下限（持久化）。可在自动化里「上课 → 设定 10-20s」。</summary>
+[ActionInfo("privacy.island.action.setDelay", "立即设定延迟", "")]
+public class SetDelayAction : ActionBase<DelayActionConfig>
+{
+    protected override async Task OnInvoke()
+    {
+        await base.OnInvoke();
+        PrivacyIslandRuntime.SetDelay(Settings.Min, Settings.Max);
     }
 }

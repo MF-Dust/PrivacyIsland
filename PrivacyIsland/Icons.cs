@@ -37,6 +37,9 @@ internal static class Icons
     public const string ChartMultipleFilled = "";
     public const string ScanFilled = "";
 
+    // Calendar / schedule
+    public const string CalendarFilled = "";
+
     // Misc
     public const string InfoFilled = "";
     public const string WarningFilled = "";

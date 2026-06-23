@@ -47,17 +47,17 @@ public class CameraNotificationProvider : NotificationProviderBase
         {
             case IpcProtocol.StatusStart:
                 text = OrDefault(cfg?.TextOnStart, "起风了");
-                color = Color.FromRgb(255, 0, 0);
+                color = ParseColor(cfg?.ColorOnStart, Color.FromRgb(255, 0, 0));
                 enabled = cfg?.NotifyOnStart ?? true;
                 break;
             case IpcProtocol.StatusWatching:
                 text = OrDefault(cfg?.TextOnWatching, "风好大");
-                color = Color.FromRgb(255, 165, 0);
+                color = ParseColor(cfg?.ColorOnWatching, Color.FromRgb(255, 165, 0));
                 enabled = cfg?.NotifyOnWatching ?? true;
                 break;
             case IpcProtocol.StatusStop:
                 text = OrDefault(cfg?.TextOnStop, "风停了");
-                color = Color.FromRgb(255, 105, 180);
+                color = ParseColor(cfg?.ColorOnStop, Color.FromRgb(255, 105, 180));
                 enabled = cfg?.NotifyOnStop ?? true;
                 break;
             default:
@@ -91,6 +91,10 @@ public class CameraNotificationProvider : NotificationProviderBase
     }
 
     static string OrDefault(string? s, string fallback) => string.IsNullOrWhiteSpace(s) ? fallback : s.Trim();
+
+    /// <summary>解析 hex 颜色字符串，非法/空则回退默认（容错，不抛异常）。</summary>
+    static Color ParseColor(string? hex, Color fallback)
+        => !string.IsNullOrWhiteSpace(hex) && Color.TryParse(hex.Trim(), out var c) ? c : fallback;
 
     void LogInformation(string message)
     {

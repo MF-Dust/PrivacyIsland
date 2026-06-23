@@ -23,12 +23,21 @@ public static class PrivacyIslandRuntime
     /// <summary>摄像头当前是否正被访问，供规则读取。</summary>
     public static bool CameraActive => Monitor?.Bridge?.CameraActive ?? false;
 
+    /// <summary>防护当前是否处于暂停态（任一暂停来源生效），供规则读取。</summary>
+    public static bool IsPaused => Monitor?.EffectivePaused ?? false;
+
     public static PluginConfig? Config => Monitor?.Config;
 
-    // 控制面（供自动化行动调用）
-    public static void Pause() => Monitor?.SetPaused(true);
-    public static void Resume() => Monitor?.SetPaused(false);
+    /// <summary>课程联动控制器（由其自身注册时挂上），供设置页"模拟上课/课间"调用。</summary>
+    public static LessonAwareController? LessonController { get; internal set; }
+
+    // 控制面（供自动化行动调用）。automation 暂停源与 manual/lesson 互不冲突。
+    public static void Pause() => Monitor?.SetPauseSource("automation", true);
+    public static void Resume() => Monitor?.SetPauseSource("automation", false);
     public static void SetDelay(int min, int max) => Monitor?.SetDelay(min, max);
+
+    /// <summary>让课程联动按当前配置与课程状态重新评估（设置页改动后调用，立即生效）。</summary>
+    public static void ReapplyLessonState() => LessonController?.Reapply();
     public static PluginOperationResult InjectNow()
         => Monitor?.InjectNow() ?? PluginOperationResult.Fail("编排器未就绪，无法注入");
     public static PluginOperationResult EjectNow()

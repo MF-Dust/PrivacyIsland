@@ -29,6 +29,11 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     int _polling;             // 防止轮询重入
     bool _awaitingDelay;      // 收到 start 后，等首条 "Delay N s" 以统计本次延迟
 
+    // 分层暂停：多个来源（manual/automation/lesson）可各自请求暂停，任一生效即暂停。
+    readonly object _pauseGate = new();
+    readonly HashSet<string> _pauseSources = new();
+    (int min, int max)? _delayOverride;   // 临时延迟覆盖（如上课加强延迟），不写 config.json
+
     string _dllPath = "";
     string _injectorPath = "";
 
@@ -140,12 +145,62 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         catch (Exception ex) { PluginLog.Error("启动注入器失败：" + ex.Message); return -3; }
     }
 
-    // ---- 控制面（供自动化行动 / 设置页调用）----
+    // ---- 控制面（供自动化行动 / 设置页 / 课程控制器调用）----
 
-    public void SetPaused(bool paused)
+    /// <summary>当前是否处于暂停态（任一暂停源生效）。供规则读取。</summary>
+    public bool EffectivePaused
     {
-        Bridge?.SetPaused(paused);
-        PluginLog.Info(paused ? "防护已暂停（摄像头将不被延迟）" : "防护已恢复");
+        get { lock (_pauseGate) return _pauseSources.Count > 0; }
+    }
+
+    /// <summary>
+    /// 分层暂停：按来源 key 增删暂停请求，任一来源生效即暂停。
+    /// 来源约定：manual=设置页/手动，automation=自动化行动，lesson=课程联动。
+    /// </summary>
+    public void SetPauseSource(string key, bool active)
+    {
+        bool effective;
+        bool changed;
+        lock (_pauseGate)
+        {
+            changed = active ? _pauseSources.Add(key) : _pauseSources.Remove(key);
+            effective = _pauseSources.Count > 0;
+        }
+        if (!changed) return;     // 该来源状态未变，避免重复写/刷日志
+        ApplyEffectiveToBridge();
+        PluginLog.Info(effective
+            ? $"防护已暂停（来源：{key}；摄像头将不被延迟）"
+            : "防护已恢复（无暂停来源）");
+    }
+
+    /// <summary>兼容旧调用：等价于 manual 暂停源。</summary>
+    public void SetPaused(bool paused) => SetPauseSource("manual", paused);
+
+    /// <summary>
+    /// 临时延迟覆盖：非空写入覆盖值（不落盘，用于上课加强延迟）；空则清除覆盖、恢复 Config 基准延迟。
+    /// </summary>
+    public void ApplyDelayOverride(int? min, int? max)
+    {
+        (int min, int max)? next;
+        if (min.HasValue && max.HasValue)
+        {
+            int lo = Math.Clamp(min.Value, 1, 30);
+            int hi = Math.Clamp(max.Value, 1, 30);
+            if (hi < lo) hi = lo;
+            next = (lo, hi);
+        }
+        else
+        {
+            next = null;
+        }
+
+        if (next.Equals(_delayOverride)) return;   // 无变化，避免重复写/刷日志（每次自动保存都会重评估）
+
+        _delayOverride = next;
+        PluginLog.Info(next.HasValue
+            ? $"已应用临时延迟覆盖：{next.Value.min}-{next.Value.max}s（不写配置）"
+            : $"已清除临时延迟覆盖，恢复基准 {Config.MinDelaySeconds}-{Config.MaxDelaySeconds}s");
+        ApplyEffectiveToBridge();
     }
 
     public void SetDelay(int min, int max)
@@ -155,13 +210,20 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         SaveAndApply();
     }
 
-    /// <summary>设置页保存：校验当前 Config、落盘、写共享内存。设置页直接改 Config 后调用本方法。</summary>
+    /// <summary>设置页保存：校验当前 Config、落盘、写共享内存（带当前暂停态与延迟覆盖）。</summary>
     public void SaveAndApply()
     {
         Config.Clamp();
         Config.Save(_folder);
-        Bridge?.WriteConfig(Config.MinDelaySeconds, Config.MaxDelaySeconds, false, Config.StealthMode);
+        ApplyEffectiveToBridge();
         PluginLog.Info($"设置已保存：延迟 {Config.MinDelaySeconds}-{Config.MaxDelaySeconds}s, 隐身={Config.StealthMode}, 语音={Config.SpeechEnabled}（隐身需重注入生效）");
+    }
+
+    /// <summary>把当前生效的延迟（覆盖优先于基准）与暂停态一次性写入共享内存。</summary>
+    void ApplyEffectiveToBridge()
+    {
+        var (min, max) = _delayOverride ?? (Config.MinDelaySeconds, Config.MaxDelaySeconds);
+        Bridge?.WriteConfig(min, max, EffectivePaused, Config.StealthMode);
     }
 
     /// <summary>应用内功能测试：注入一帧合成状态，走真实分发路径（提醒/触发器/规则/统计全联动），无需真注入。</summary>

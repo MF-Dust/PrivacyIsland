@@ -22,6 +22,21 @@ public sealed class PluginConfig
     public string TextOnWatching { get; set; } = "风好大";
     public string TextOnStop { get; set; } = "风停了";
 
+    // 提醒颜色（hex，默认与原写死值一致：红/橙/粉）。provider 容错解析，非法值回退默认。
+    public string ColorOnStart { get; set; } = "#FF0000";
+    public string ColorOnWatching { get; set; } = "#FFA500";
+    public string ColorOnStop { get; set; } = "#FF69B4";
+
+    // 课程感知联动（接 ILessonsService）。默认全关，保持现有行为。
+    public bool LessonAwareEnabled { get; set; } = false;        // 总开关
+    public bool PauseDuringClass { get; set; } = false;          // 上课时自动暂停防护
+    public bool StrongerDelayDuringClass { get; set; } = false;  // 上课时改用加强延迟（未暂停时生效）
+    public int ClassMinDelaySeconds { get; set; } = 10;          // 上课加强延迟下限
+    public int ClassMaxDelaySeconds { get; set; } = 20;          // 上课加强延迟上限
+
+    /// <summary>文案最大长度，超出截断，防止溢出 overlay。</summary>
+    public const int MaxTextLength = 50;
+
     static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
     static string PathFor(string folder) => System.IO.Path.Combine(folder, "config.json");
@@ -64,5 +79,23 @@ public sealed class PluginConfig
         if (MaxDelaySeconds < MinDelaySeconds) MaxDelaySeconds = MinDelaySeconds;
         if (OverlayDurationSeconds < 1) OverlayDurationSeconds = 1;
         if (OverlayDurationSeconds > 30) OverlayDurationSeconds = 30;
+
+        // 上课加强延迟：同样限 1..30 且 max>=min。
+        if (ClassMinDelaySeconds < 1) ClassMinDelaySeconds = 1;
+        if (ClassMinDelaySeconds > 30) ClassMinDelaySeconds = 30;
+        if (ClassMaxDelaySeconds < 1) ClassMaxDelaySeconds = 1;
+        if (ClassMaxDelaySeconds > 30) ClassMaxDelaySeconds = 30;
+        if (ClassMaxDelaySeconds < ClassMinDelaySeconds) ClassMaxDelaySeconds = ClassMinDelaySeconds;
+
+        // 文案截断，防止溢出 overlay。
+        TextOnStart = Truncate(TextOnStart);
+        TextOnWatching = Truncate(TextOnWatching);
+        TextOnStop = Truncate(TextOnStop);
+    }
+
+    static string Truncate(string? s)
+    {
+        s ??= "";
+        return s.Length > MaxTextLength ? s.Substring(0, MaxTextLength) : s;
     }
 }

@@ -15,6 +15,7 @@ const int OffLogBuffer = 0;
 const int OffCurrState = 2048;
 const int OffMinDelay = 2056;
 const int OffMaxDelay = 2060;
+const int OffPaused = 2068;
 const int OffStealth = 2076;
 const int Size = 2080;
 const int StatusStart = 1;
@@ -83,6 +84,12 @@ using (var bridge = new SharedMemoryBridge())
     Assert(view.ReadInt32(OffMinDelay) == 5, "WriteConfig 写入 min=5");
     Assert(view.ReadInt32(OffMaxDelay) == 9, "WriteConfig 写入 max=9");
     Assert(view.ReadInt32(OffStealth) == 1, "WriteConfig 写入 stealth=1");
+
+    // 暂停标志：分层暂停模型最终经 WriteConfig/SetPaused 落到 OffPaused。
+    bridge.WriteConfig(minDelay: 5, maxDelay: 9, paused: true, stealth: true);
+    Assert(view.ReadInt32(OffPaused) == 1, "WriteConfig 写入 paused=1");
+    bridge.SetPaused(false);
+    Assert(view.ReadInt32(OffPaused) == 0, "SetPaused(false) 写入 paused=0");
 
     // 4) Simulate（应用内功能测试引擎）：应走真实读线程路径触发 StateReceived + CameraActive
     bridge.Simulate(StatusStart, "（模拟）DS capture start!");

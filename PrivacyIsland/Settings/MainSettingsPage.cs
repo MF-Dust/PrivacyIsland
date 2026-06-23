@@ -26,9 +26,25 @@ public class MainSettingsPage : SettingsPageBase
     readonly ToggleSwitch _swStop = new();
     readonly ToggleSwitch _swSpeech = new();
     readonly NumericUpDown _numDuration = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
-    readonly TextBox _txtStart = new() { Width = 180 };
-    readonly TextBox _txtWatching = new() { Width = 180 };
-    readonly TextBox _txtStop = new() { Width = 180 };
+    readonly TextBox _txtStart = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
+    readonly TextBox _txtWatching = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
+    readonly TextBox _txtStop = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
+
+    // 通知颜色（hex 输入 + 色块预览）
+    readonly TextBox _txtColorStart = new() { Width = 110 };
+    readonly TextBox _txtColorWatching = new() { Width = 110 };
+    readonly TextBox _txtColorStop = new() { Width = 110 };
+    readonly Border _swatchStart = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
+    readonly Border _swatchWatching = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
+    readonly Border _swatchStop = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
+
+    // 课程联动
+    readonly ToggleSwitch _swLessonAware = new();
+    readonly ToggleSwitch _swPauseInClass = new();
+    readonly ToggleSwitch _swStrongDelayInClass = new();
+    readonly NumericUpDown _numClassMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
+    readonly NumericUpDown _numClassMax = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
+
     readonly TextBlock _lblStats = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBlock _lblDiag = new() { TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas"), FontSize = 12 };
     readonly DispatcherTimer _textSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
@@ -60,6 +76,7 @@ public class MainSettingsPage : SettingsPageBase
         root.Children.Add(TitleSection());
         root.Children.Add(_infoBar);
         root.Children.Add(DelaySection());
+        root.Children.Add(LessonSection());
         root.Children.Add(NotificationSection());
         root.Children.Add(StatsSection());
         root.Children.Add(TestSection());
@@ -103,6 +120,18 @@ public class MainSettingsPage : SettingsPageBase
         return Expander(Icons.TimerFilled, "捕获延迟", "控制摄像头捕获开始前的随机等待时间", minItem, maxItem, stealthItem);
     }
 
+    SettingsExpander LessonSection()
+    {
+        var enableItem = Item(Icons.CalendarFilled, "启用课程联动", "按 ClassIsland 课程状态自动调整防护（总开关）", _swLessonAware);
+        var pauseItem = Item(Icons.PauseFilled, "上课时自动暂停", "进入上课时段时暂停摄像头延迟防护，课间自动恢复", _swPauseInClass);
+        var strongItem = Item(Icons.TimerFilled, "上课时加强延迟", "上课时改用下方加强延迟（未勾选自动暂停时生效），课间恢复基准", _swStrongDelayInClass);
+        var minItem = Item(Icons.TimerFilled, "上课最小延迟（秒）", "上课加强延迟的下限", _numClassMin);
+        var maxItem = Item(Icons.TimerFilled, "上课最大延迟（秒）", "上课加强延迟的上限", _numClassMax);
+
+        return Expander(Icons.CalendarFilled, "课程联动", "接入课程表，上课/课间自动切换防护策略",
+            enableItem, pauseItem, strongItem, minItem, maxItem);
+    }
+
     SettingsExpander NotificationSection()
     {
         var startItem = Item(Icons.CameraFilled, "摄像头启动时提醒", "捕获开始（进入延迟阶段）时弹出通知", _swStart);
@@ -113,10 +142,34 @@ public class MainSettingsPage : SettingsPageBase
         var txtStartItem = Item(Icons.CameraFilled, "启动提醒文案", "摄像头启动时显示的文字", _txtStart);
         var txtWatchingItem = Item(Icons.EyeFilled, "监视提醒文案", "进入监视状态时显示的文字", _txtWatching);
         var txtStopItem = Item(Icons.CameraOffFilled, "关闭提醒文案", "摄像头关闭时显示的文字", _txtStop);
+        var colStartItem = Item(Icons.CameraFilled, "启动提醒颜色", "hex 颜色，如 #FF0000；非法值回退默认", ColorFooter(_txtColorStart, _swatchStart));
+        var colWatchingItem = Item(Icons.EyeFilled, "监视提醒颜色", "hex 颜色，如 #FFA500；非法值回退默认", ColorFooter(_txtColorWatching, _swatchWatching));
+        var colStopItem = Item(Icons.CameraOffFilled, "关闭提醒颜色", "hex 颜色，如 #FF69B4；非法值回退默认", ColorFooter(_txtColorStop, _swatchStop));
 
-        return Expander(Icons.MegaphoneFilled, "提醒设置", "控制 ClassIsland 通知的开关、时长与文案",
+        return Expander(Icons.MegaphoneFilled, "提醒设置", "控制 ClassIsland 通知的开关、时长、文案与颜色",
             startItem, watchingItem, stopItem, speechItem, durationItem,
-            txtStartItem, txtWatchingItem, txtStopItem);
+            txtStartItem, txtWatchingItem, txtStopItem,
+            colStartItem, colWatchingItem, colStopItem);
+    }
+
+    static Control ColorFooter(TextBox box, Border swatch)
+    {
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { box, swatch },
+        };
+    }
+
+    /// <summary>把 hex 文本解析为色块背景，非法/空回退灰色。</summary>
+    static void UpdateSwatch(TextBox box, Border swatch)
+    {
+        var hex = box.Text?.Trim();
+        swatch.Background = !string.IsNullOrWhiteSpace(hex) && Color.TryParse(hex, out var c)
+            ? new SolidColorBrush(c)
+            : new SolidColorBrush(Colors.Gray);
     }
 
     SettingsExpander StatsSection()
@@ -153,6 +206,11 @@ public class MainSettingsPage : SettingsPageBase
         spSim.Children.Add(SimulateButton("完整模拟", RunFullSimulation));
         var simItem = Item(Icons.PlayFilled, "模拟摄像头事件", "走完整 IPC 路径触发提醒/触发器/规则/统计，无需真注入", spSim);
 
+        var spLesson = new StackPanel { Spacing = 4 };
+        spLesson.Children.Add(SimulateButton("模拟上课", () => SimLesson(true)));
+        spLesson.Children.Add(SimulateButton("模拟课间", () => SimLesson(false)));
+        var lessonItem = Item(Icons.CalendarFilled, "模拟课程状态", "按当前课程联动设置应用上课/课间策略，无需等真实课表", spLesson);
+
         var btnRefresh = new Button { Content = "刷新诊断", Margin = new Thickness(0, 4, 0, 0) };
         btnRefresh.Click += (_, _) =>
         {
@@ -184,7 +242,24 @@ public class MainSettingsPage : SettingsPageBase
         spActions.Children.Add(btnEject);
         var actionItem = Item(Icons.PlugConnectedFilled, "手动注入 / 弹射", "立即向 media_capture.exe 注入或弹射防护 DLL", spActions);
 
-        return Expander(Icons.ScanFilled, "功能测试", "诊断与应用内模拟，无需真实注入即可验证", diagItem, simItem, refreshItem, logsItem, actionItem);
+        return Expander(Icons.ScanFilled, "功能测试", "诊断与应用内模拟，无需真实注入即可验证", diagItem, simItem, lessonItem, refreshItem, logsItem, actionItem);
+    }
+
+    void SimLesson(bool inClass)
+    {
+        FlushConfig();
+        var controller = PrivacyIslandRuntime.LessonController;
+        if (controller == null)
+        {
+            ShowInfo("课程联动控制器未就绪。", InfoBarSeverity.Warning);
+            return;
+        }
+        controller.ApplyLessonState(inClass);
+        RefreshDiagnostics();
+        bool paused = PrivacyIslandRuntime.IsPaused;
+        ShowInfo(inClass
+            ? $"已模拟「上课」。当前防护：{(paused ? "已暂停" : "正常")}。"
+            : "已模拟「课间」，已恢复常态。", InfoBarSeverity.Success);
     }
 
     // ---- helpers ----
@@ -236,9 +311,29 @@ public class MainSettingsPage : SettingsPageBase
         _swStop.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swSpeech.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
 
+        _swLessonAware.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swPauseInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swStrongDelayInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _numClassMin.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
+        _numClassMax.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
+
         WireTextAutosave(_txtStart);
         WireTextAutosave(_txtWatching);
         WireTextAutosave(_txtStop);
+        WireColorAutosave(_txtColorStart, _swatchStart);
+        WireColorAutosave(_txtColorWatching, _swatchWatching);
+        WireColorAutosave(_txtColorStop, _swatchStop);
+    }
+
+    void WireColorAutosave(TextBox box, Border swatch)
+    {
+        box.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != TextBox.TextProperty) return;
+            UpdateSwatch(box, swatch);
+            MarkConfigDirty(true, debounce: true);
+        };
+        box.LostFocus += (_, _) => FlushConfig();
     }
 
     void WireTextAutosave(TextBox textBox)
@@ -286,6 +381,17 @@ public class MainSettingsPage : SettingsPageBase
         _txtStart.Text = _cfg.TextOnStart;
         _txtWatching.Text = _cfg.TextOnWatching;
         _txtStop.Text = _cfg.TextOnStop;
+        _txtColorStart.Text = _cfg.ColorOnStart;
+        _txtColorWatching.Text = _cfg.ColorOnWatching;
+        _txtColorStop.Text = _cfg.ColorOnStop;
+        UpdateSwatch(_txtColorStart, _swatchStart);
+        UpdateSwatch(_txtColorWatching, _swatchWatching);
+        UpdateSwatch(_txtColorStop, _swatchStop);
+        _swLessonAware.IsChecked = _cfg.LessonAwareEnabled;
+        _swPauseInClass.IsChecked = _cfg.PauseDuringClass;
+        _swStrongDelayInClass.IsChecked = _cfg.StrongerDelayDuringClass;
+        _numClassMin.Value = _cfg.ClassMinDelaySeconds;
+        _numClassMax.Value = _cfg.ClassMaxDelaySeconds;
         _configDirty = false;
         _loading = false;
 
@@ -347,7 +453,28 @@ public class MainSettingsPage : SettingsPageBase
         _cfg.TextOnStart = _txtStart.Text ?? "起风了";
         _cfg.TextOnWatching = _txtWatching.Text ?? "风好大";
         _cfg.TextOnStop = _txtStop.Text ?? "风停了";
+        _cfg.ColorOnStart = string.IsNullOrWhiteSpace(_txtColorStart.Text) ? "#FF0000" : _txtColorStart.Text!.Trim();
+        _cfg.ColorOnWatching = string.IsNullOrWhiteSpace(_txtColorWatching.Text) ? "#FFA500" : _txtColorWatching.Text!.Trim();
+        _cfg.ColorOnStop = string.IsNullOrWhiteSpace(_txtColorStop.Text) ? "#FF69B4" : _txtColorStop.Text!.Trim();
+
+        int classMin = (int)(_numClassMin.Value ?? 10);
+        int classMax = (int)(_numClassMax.Value ?? 20);
+        if (classMax < classMin)
+        {
+            classMax = classMin;
+            _loading = true;
+            _numClassMax.Value = classMax;
+            _loading = false;
+        }
+        _cfg.LessonAwareEnabled = _swLessonAware.IsChecked == true;
+        _cfg.PauseDuringClass = _swPauseInClass.IsChecked == true;
+        _cfg.StrongerDelayDuringClass = _swStrongDelayInClass.IsChecked == true;
+        _cfg.ClassMinDelaySeconds = classMin;
+        _cfg.ClassMaxDelaySeconds = classMax;
+
         PrivacyIslandRuntime.Monitor?.SaveAndApply();
+        // 课程联动设置可能变了，立即按当前课程状态重评估（开/关、改加强延迟值都即时生效）。
+        PrivacyIslandRuntime.ReapplyLessonState();
         _configDirty = false;
     }
 
