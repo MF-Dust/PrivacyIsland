@@ -109,10 +109,10 @@ return;
 void RunLive()
 {
     string baseDir = AppContext.BaseDirectory;
-    string dll = Find(baseDir, "NoMoreMonitor_Dll.dll",
-        @"..\..\..\..\NoMoreMonitor_Dll\Release\NoMoreMonitor_Dll.dll");
+    string dll = Find(baseDir, "PrivacyIslandHook.dll",
+        @"..\..\..\..\PrivacyIsland\Native\PrivacyIslandHook.dll");
     string injector = Find(baseDir, "nmm_injector.exe",
-        @"..\..\..\..\NoMoreMonitor_Injector\Release\nmm_injector.exe");
+        @"..\..\..\..\PrivacyIsland\Native\nmm_injector.exe");
     Assert(File.Exists(dll), $"找到 hook DLL: {dll}");
     Assert(File.Exists(injector), $"找到注入器: {injector}");
 
@@ -139,7 +139,7 @@ void RunLive()
         Assert(got.WaitOne(12000), "12s 内收到 DLL 上报的至少一帧状态");
         Console.WriteLine($"  共收到 {msgs.Count} 帧");
 
-        Process.Start(injector, $"--eject {target.Id} \"NoMoreMonitor_Dll.dll\"")!.WaitForExit(5000);
+        Process.Start(injector, $"--eject {target.Id} \"PrivacyIslandHook.dll\"")!.WaitForExit(5000);
     }
     finally
     {

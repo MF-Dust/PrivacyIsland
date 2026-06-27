@@ -21,7 +21,7 @@ namespace PrivacyIsland.Orchestrator;
 public sealed class CaptureMonitor : IHostedService, IDisposable
 {
     const string TargetProcessName = "media_capture";   // 不含 .exe
-    const string DllFileName = "NoMoreMonitor_Dll.dll";
+    const string DllFileName = "PrivacyIslandHook.dll";
     const string InjectorFileName = "nmm_injector.exe";
     static readonly TimeSpan InjectionRetryInterval = TimeSpan.FromSeconds(15);
 

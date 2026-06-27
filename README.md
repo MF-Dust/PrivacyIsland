@@ -84,7 +84,7 @@ dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj
 ## 排障
 
 - 提示注入失败：确认 ClassIsland 已以管理员身份运行。
-- 诊断显示缺少 DLL 或注入器：确认 `PrivacyIsland.cipx` 中包含 `NoMoreMonitor_Dll.dll` 和 `nmm_injector.exe`。
+- 诊断显示缺少 DLL 或注入器：确认 `PrivacyIsland.cipx` 中包含 `PrivacyIslandHook.dll` 和 `nmm_injector.exe`。
 - 找不到目标进程：确认希沃相关摄像头进程 `media_capture.exe` 正在运行。
 - 修改隐身模式后未生效：重新注入或重启 ClassIsland。
 - 日志位置：插件日志写入 ClassIsland 宿主日志，不单独生成日志目录。

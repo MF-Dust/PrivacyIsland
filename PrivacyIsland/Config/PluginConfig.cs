@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace PrivacyIsland.Config;
 
-/// <summary>插件配置，持久化到 PluginConfigFolder/config.json（替代原 NoMoreMonitor.ini）。</summary>
+/// <summary>插件配置，持久化到 PluginConfigFolder/config.json。</summary>
 public sealed class PluginConfig
 {
     public int MinDelaySeconds { get; set; } = 3;
