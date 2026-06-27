@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
@@ -7,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using PrivacyIsland.Config;
 using PrivacyIsland.Ipc;
 using PrivacyIsland.Logging;
+using PrivacyIsland.Native;
 using PrivacyIsland.Statistics;
 
 namespace PrivacyIsland.Orchestrator;
@@ -21,11 +23,16 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     const string TargetProcessName = "media_capture";   // 不含 .exe
     const string DllFileName = "NoMoreMonitor_Dll.dll";
     const string InjectorFileName = "nmm_injector.exe";
+    static readonly TimeSpan InjectionRetryInterval = TimeSpan.FromSeconds(15);
 
     readonly string _folder;
     readonly ILogger<CaptureMonitor> _logger;
     Timer? _timer;
-    int _handledPid;          // 已处理过的目标 pid（成功/失败都记，避免每秒重试同一实例）
+    int _lastInjectedPid;     // 同一目标进程注入成功后不重复处理
+    int _lastAttemptPid;      // 注入失败时保留 pid，并按冷却时间重试
+    DateTime _lastAttemptUtc;
+    int _lastInjectionCode;
+    string _lastInjectionMessage = "尚未尝试注入";
     int _polling;             // 防止轮询重入
     bool _awaitingDelay;      // 收到 start 后，等首条 "Delay N s" 以统计本次延迟
 
@@ -87,48 +94,86 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     void PollOnce()
     {
-        int pid = FindTargetPid();
-        if (pid == 0) { _handledPid = 0; return; }
-        if (pid == _handledPid) return;     // 该进程实例已处理（成功或失败都不再每秒重试）
-        _handledPid = pid;
-        Inject(pid);
+        var target = FindTargetProcess();
+        if (target is null)
+        {
+            _lastInjectedPid = 0;
+            _lastAttemptPid = 0;
+            return;
+        }
+
+        if (target.Pid == _lastInjectedPid) return;     // 该进程实例已成功处理
+        if (target.Pid == _lastAttemptPid &&
+            DateTime.UtcNow - _lastAttemptUtc < InjectionRetryInterval)
+            return;                                     // 失败后冷却，避免每秒刷日志/拉起注入器
+
+        _lastAttemptPid = target.Pid;
+        _lastAttemptUtc = DateTime.UtcNow;
+        var result = Inject(target);
+        if (result.Success) _lastInjectedPid = target.Pid;
     }
 
-    static int FindTargetPid()
+    static TargetProcessInfo? FindTargetProcess()
     {
         var procs = Process.GetProcessesByName(TargetProcessName);
-        if (procs.Length == 0) return 0;
-        int pid = procs[0].Id;
-        foreach (var p in procs) p.Dispose();
-        return pid;
+        if (procs.Length == 0) return null;
+
+        try
+        {
+            var candidates = new List<TargetProcessInfo>(procs.Length);
+            foreach (var p in procs)
+            {
+                try { candidates.Add(TargetProcessInfo.FromProcess(p)); }
+                catch { candidates.Add(new TargetProcessInfo(p.Id, "", "", "", "", "", false, null)); }
+            }
+
+            // 希沃 2026 版本的媒体采集工具箱入口位于 toolbox\media_capture\media_capture.exe。
+            // 多实例时优先选这个路径，再退回到有希沃版本信息的进程，最后才取 pid 最小的实例。
+            return candidates
+                .OrderByDescending(c => c.IsSeewoMediaCaptureToolbox)
+                .ThenByDescending(c => c.IsLikelySeewo)
+                .ThenBy(c => c.Pid)
+                .FirstOrDefault();
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
     }
 
-    PluginOperationResult Inject(int pid)
+    PluginOperationResult Inject(TargetProcessInfo target)
     {
         if (!File.Exists(_injectorPath))
         {
             string message = $"找不到注入器：{_injectorPath}";
             PluginLog.Error(message);
+            _lastInjectionCode = -10;
+            _lastInjectionMessage = message;
             return PluginOperationResult.Fail(message);
         }
         if (!File.Exists(_dllPath))
         {
             string message = $"找不到 hook DLL：{_dllPath}";
             PluginLog.Error(message);
+            _lastInjectionCode = -11;
+            _lastInjectionMessage = message;
             return PluginOperationResult.Fail(message);
         }
 
-        int code = RunInjector($"--inject {pid} \"{_dllPath}\"");
+        int code = RunInjector($"--inject {target.Pid} \"{_dllPath}\"");
+        _lastInjectionCode = code;
         if (code == 0)
         {
-            string message = $"已注入 media_capture.exe (pid={pid})";
+            string message = $"已注入 media_capture.exe (pid={target.Pid}, {target.DisplayName})";
             PluginLog.Info(message);
+            _lastInjectionMessage = message;
             return PluginOperationResult.Ok(message);
         }
         else
         {
-            string message = $"注入失败 (pid={pid}, code={code})。请尝试以管理员身份运行 ClassIsland。";
+            string message = $"注入失败 (pid={target.Pid}, code={code}, {target.DisplayName})。将在 {InjectionRetryInterval.TotalSeconds:0}s 后重试；请确认 ClassIsland 以管理员身份运行。";
             PluginLog.Warn(message);
+            _lastInjectionMessage = message;
             return PluginOperationResult.Fail(message);
         }
     }
@@ -232,14 +277,23 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     /// <summary>诊断信息：文件/IPC/目标进程/注入/权限状态，给设置页的功能测试区展示。</summary>
     public string Diagnostics()
     {
-        int pid = FindTargetPid();
+        var target = FindTargetProcess();
+        string targetSummary = target is null ? "否" : $"是 (pid={target.Pid}, {target.DisplayName})";
+        string bootSummary = target is null ? "未检测" : DescribeBootConfig(target.ExecutablePath);
+        string portsSummary = target is null ? "未检测" : DescribeListeningPorts(target.Pid);
         return
             $"注入器存在: {(File.Exists(_injectorPath) ? "是" : "否")}\n" +
             $"hook DLL 存在: {(File.Exists(_dllPath) ? "是" : "否")}\n" +
             $"IPC 就绪: {(Bridge != null ? "是" : "否")}\n" +
             $"以管理员运行: {(IsAdmin() ? "是" : "否（跨进程注入通常需要）")}\n" +
-            $"检测到 media_capture.exe: {(pid == 0 ? "否" : $"是 (pid={pid})")}\n" +
-            $"已注入的 pid: {(_handledPid == 0 ? "无" : _handledPid.ToString())}\n" +
+            $"检测到 media_capture.exe: {targetSummary}\n" +
+            $"目标路径: {DisplayPath(target?.ExecutablePath)}\n" +
+            $"目标版本: {DisplayVersion(target)}\n" +
+            $"目标 BootConfig: {bootSummary}\n" +
+            $"目标监听端口: {portsSummary}\n" +
+            $"反编译接口: {MediaCaptureProtocol.CapabilitySummary}\n" +
+            $"已注入的 pid: {(_lastInjectedPid == 0 ? "无" : _lastInjectedPid.ToString())}\n" +
+            $"最近注入结果: {_lastInjectionMessage} (code={_lastInjectionCode})\n" +
             $"摄像头当前活动: {(Bridge?.CameraActive == true ? "是" : "否")}";
     }
 
@@ -264,41 +318,177 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     public PluginOperationResult InjectNow()
     {
-        int pid = FindTargetPid();
-        if (pid == 0)
+        var target = FindTargetProcess();
+        if (target is null)
         {
             const string message = "未找到 media_capture.exe，无法注入";
             PluginLog.Warn(message);
             return PluginOperationResult.Fail(message);
         }
 
-        _handledPid = pid;
-        return Inject(pid);
+        _lastAttemptPid = target.Pid;
+        _lastAttemptUtc = DateTime.UtcNow;
+        var result = Inject(target);
+        if (result.Success) _lastInjectedPid = target.Pid;
+        return result;
     }
 
     public PluginOperationResult EjectNow()
     {
-        int pid = FindTargetPid();
-        if (pid == 0)
+        var target = FindTargetProcess();
+        if (target is null)
         {
             const string message = "未找到 media_capture.exe，无法弹射";
             PluginLog.Warn(message);
             return PluginOperationResult.Fail(message);
         }
 
-        int code = RunInjector($"--eject {pid} \"{DllFileName}\"");
-        _handledPid = 0;
+        int code = RunInjector($"--eject {target.Pid} \"{_dllPath}\"");
+        _lastInjectedPid = 0;
+        _lastInjectionCode = code;
         if (code == 0)
         {
             const string message = "已弹射 hook DLL";
             PluginLog.Info(message);
+            _lastInjectionMessage = message;
             return PluginOperationResult.Ok(message);
         }
         else
         {
             string message = $"弹射失败 (code={code})";
             PluginLog.Warn(message);
+            _lastInjectionMessage = message;
             return PluginOperationResult.Fail(message);
+        }
+    }
+
+    static string DisplayPath(string? path) => string.IsNullOrWhiteSpace(path) ? "未知（权限不足或进程已退出）" : path;
+
+    static string DisplayVersion(TargetProcessInfo? target)
+    {
+        if (target is null) return "未检测";
+        var parts = new[] { target.FileVersion, target.ProductVersion, target.Description, target.Product }
+            .Where(s => !string.IsNullOrWhiteSpace(s));
+        string text = string.Join(" / ", parts);
+        return string.IsNullOrWhiteSpace(text) ? "未知" : text;
+    }
+
+    static string DescribeListeningPorts(int pid)
+    {
+        try
+        {
+            var ports = TcpTable.GetListeningPorts(pid);
+            return ports.Count == 0 ? "未发现（RPC/HTTP 可能尚未初始化）" : string.Join(", ", ports);
+        }
+        catch (Exception ex)
+        {
+            return "读取失败：" + ex.Message;
+        }
+    }
+
+    static string DescribeBootConfig(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath)) return "未知（无法读取目标路径）";
+        try
+        {
+            string? dir = Path.GetDirectoryName(executablePath);
+            if (string.IsNullOrWhiteSpace(dir)) return "未知（目标路径无目录）";
+            string path = Path.Combine(dir, "BootConfig.json");
+            if (!File.Exists(path)) return "未找到";
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (!doc.RootElement.TryGetProperty("default", out var root)) return "已找到（无 default 节）";
+            string launcher = root.TryGetProperty("launcher", out var launcherElement) ? launcherElement.GetString() ?? "" : "";
+            string needGuard = root.TryGetProperty("needGuard", out var needGuardElement) && needGuardElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? (needGuardElement.GetBoolean() ? "true" : "false")
+                : "未知";
+            string order = root.TryGetProperty("order", out var orderElement) ? orderElement.ToString() : "未知";
+            return $"launcher={launcher}, needGuard={needGuard}, order={order}";
+        }
+        catch (Exception ex)
+        {
+            return "读取失败：" + ex.Message;
+        }
+    }
+
+    sealed record TargetProcessInfo(
+        int Pid,
+        string ExecutablePath,
+        string FileVersion,
+        string ProductVersion,
+        string Description,
+        string Product,
+        bool Is32Bit,
+        string? Machine)
+    {
+        public bool IsSeewoMediaCaptureToolbox =>
+            ExecutablePath.Contains(@"\toolbox\media_capture\media_capture.exe", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsLikelySeewo =>
+            IsSeewoMediaCaptureToolbox ||
+            Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) ||
+            Description.Contains("媒体采集", StringComparison.OrdinalIgnoreCase);
+
+        public string DisplayName
+        {
+            get
+            {
+                string arch = Machine ?? (Is32Bit ? "x86" : "x64/未知");
+                if (!string.IsNullOrWhiteSpace(FileVersion)) arch += ", v" + FileVersion;
+                if (IsSeewoMediaCaptureToolbox) arch += ", toolbox";
+                return arch;
+            }
+        }
+
+        public static TargetProcessInfo FromProcess(Process process)
+        {
+            string path = "";
+            try { path = process.MainModule?.FileName ?? ""; }
+            catch { }
+
+            FileVersionInfo? version = null;
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                try { version = FileVersionInfo.GetVersionInfo(path); }
+                catch { }
+            }
+
+            string? machine = TryReadPeMachine(path);
+            return new TargetProcessInfo(
+                process.Id,
+                path,
+                version?.FileVersion ?? "",
+                version?.ProductVersion ?? "",
+                version?.FileDescription ?? "",
+                version?.ProductName ?? "",
+                string.Equals(machine, "x86", StringComparison.OrdinalIgnoreCase),
+                machine);
+        }
+
+        static string? TryReadPeMachine(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                using var fs = File.OpenRead(path);
+                using var br = new BinaryReader(fs);
+                if (br.ReadUInt16() != 0x5A4D) return null; // MZ
+                fs.Position = 0x3C;
+                int peOffset = br.ReadInt32();
+                if (peOffset <= 0 || peOffset > fs.Length - 6) return null;
+                fs.Position = peOffset;
+                if (br.ReadUInt32() != 0x00004550) return null; // PE\0\0
+                ushort machine = br.ReadUInt16();
+                return machine switch
+                {
+                    0x014C => "x86",
+                    0x8664 => "x64",
+                    0x01C4 => "ARM",
+                    0xAA64 => "ARM64",
+                    _ => "0x" + machine.ToString("X4"),
+                };
+            }
+            catch { return null; }
         }
     }
 

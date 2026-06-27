@@ -1,0 +1,77 @@
+syntax = "proto2";
+
+package com.seewo.mediaCapture.protocol;
+
+message CaptureImageRequest {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
+  optional string deviceId = 3;
+  optional ImageFormat format = 4;
+  optional uint32 occupy = 5;
+}
+
+message CaptureImageFileRequest {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
+  optional string deviceId = 3;
+  optional FileFormat format = 4;
+  optional string path = 5;
+  optional uint32 expiration = 6;
+  optional uint32 occupy = 7;
+}
+
+message CaptureImageResponse {
+  optional bool result = 1;
+  optional bytes data = 2;
+  optional uint32 width = 3;
+  optional uint32 height = 4;
+  optional uint32 stride = 5;
+  optional string deviceId = 6;
+}
+
+message CaptureImageFileResponse {
+  optional bool result = 1;
+  optional string path = 2;
+  optional uint32 width = 3;
+  optional uint32 height = 4;
+}
+
+message DeviceRequest {
+  optional string deviceId = 1;
+}
+
+message H264StreamRequest {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
+  optional string deviceId = 3;
+}
+
+message H264StreamKeyRequest {
+  optional string deviceId = 1;
+}
+
+message CmdResponse {
+  optional bool result = 1;
+}
+
+message H264Frame {
+  optional bytes data = 1;
+  optional uint32 width = 2;
+  optional uint32 height = 3;
+  optional bool key = 4;
+  optional string deviceId = 5;
+}
+
+message CaptureDeviceLost {
+  optional string deviceId = 1;
+}
+
+enum ImageFormat {
+  IMAGE_YUV420 = 0;
+}
+
+enum FileFormat {
+  FILE_BITMAP = 0;
+  FILE_JPEG = 1;
+  FILE_PNG = 2;
+}
