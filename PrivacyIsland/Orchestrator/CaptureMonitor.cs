@@ -205,14 +205,17 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     public void SetPauseSource(string key, bool active)
     {
         bool effective;
+        bool previousEffective;
         bool changed;
         lock (_pauseGate)
         {
+            previousEffective = _pauseSources.Count > 0;
             changed = active ? _pauseSources.Add(key) : _pauseSources.Remove(key);
             effective = _pauseSources.Count > 0;
         }
         if (!changed) return;     // 该来源状态未变，避免重复写/刷日志
         ApplyEffectiveToBridge();
+        if (effective != previousEffective) PrivacyIslandRuntime.RaiseProtectionPauseChanged(effective);
         PluginLog.Info(effective
             ? $"防护已暂停（来源：{key}；摄像头将不被延迟）"
             : "防护已恢复（无暂停来源）");

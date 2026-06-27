@@ -15,9 +15,17 @@ public static class PrivacyIslandRuntime
     /// <summary>每帧 DLL 状态——提醒 provider 与触发器订阅此事件。</summary>
     public static event Action<CaptureSnapshot>? StateReceived;
 
+    /// <summary>防护暂停状态变化——自动化触发器订阅此事件。</summary>
+    public static event Action<bool>? ProtectionPauseChanged;
+
     internal static void RaiseState(CaptureSnapshot s)
     {
         try { StateReceived?.Invoke(s); } catch { /* 订阅方异常隔离 */ }
+    }
+
+    internal static void RaiseProtectionPauseChanged(bool paused)
+    {
+        try { ProtectionPauseChanged?.Invoke(paused); } catch { /* 订阅方异常隔离 */ }
     }
 
     /// <summary>摄像头当前是否正被访问，供规则读取。</summary>
@@ -35,6 +43,8 @@ public static class PrivacyIslandRuntime
     public static void Pause() => Monitor?.SetPauseSource("automation", true);
     public static void Resume() => Monitor?.SetPauseSource("automation", false);
     public static void SetDelay(int min, int max) => Monitor?.SetDelay(min, max);
+    public static void ApplyDelayOverride(int min, int max) => Monitor?.ApplyDelayOverride(min, max);
+    public static void ClearDelayOverride() => Monitor?.ApplyDelayOverride(null, null);
 
     /// <summary>让课程联动按当前配置与课程状态重新评估（设置页改动后调用，立即生效）。</summary>
     public static void ReapplyLessonState() => LessonController?.Reapply();

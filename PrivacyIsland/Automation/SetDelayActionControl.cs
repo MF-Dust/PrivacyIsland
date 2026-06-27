@@ -5,14 +5,14 @@ using ClassIsland.Core.Abstractions.Controls;
 
 namespace PrivacyIsland.Automation;
 
-/// <summary>「立即设定延迟」行动的设置界面：两个数值框编辑 Min/Max（代码构建，无 AXAML）。</summary>
-public class SetDelayActionControl : ActionSettingsControlBase<DelayActionConfig>
+public abstract class DelayActionControlBase<TSettings> : ActionSettingsControlBase<TSettings>
+    where TSettings : DelayActionConfig
 {
     readonly NumericUpDown _numMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly NumericUpDown _numMax = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     bool _loading;
 
-    public SetDelayActionControl()
+    protected DelayActionControlBase()
     {
         var panel = new StackPanel { Spacing = 6 };
         panel.Children.Add(Row("最小延迟（秒）", _numMin));
@@ -62,3 +62,9 @@ public class SetDelayActionControl : ActionSettingsControlBase<DelayActionConfig
         };
     }
 }
+
+/// <summary>「立即设定延迟」行动的设置界面：两个数值框编辑 Min/Max（代码构建，无 AXAML）。</summary>
+public class SetDelayActionControl : DelayActionControlBase<DelayActionConfig> { }
+
+/// <summary>「临时设定延迟」行动的设置界面。</summary>
+public class TemporaryDelayActionControl : DelayActionControlBase<TemporaryDelayActionConfig> { }

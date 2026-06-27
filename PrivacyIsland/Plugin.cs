@@ -30,16 +30,21 @@ public class Plugin : PluginBase
         // 提醒：摄像头开启/监视/关闭弹 ClassIsland 通知（替代原生覆盖层）。
         services.AddNotificationProvider<CameraNotificationProvider, CameraNotificationSettingsControl>();
 
-        // 自动化触发器：摄像头开启/关闭时。
+        // 自动化触发器：摄像头状态与防护状态变化。
         services.AddTrigger<CameraStartedTrigger>();
         services.AddTrigger<CameraWatchingTrigger>();
         services.AddTrigger<CameraStoppedTrigger>();
+        services.AddTrigger<CameraStateTrigger, CameraStateTriggerControl>();
+        services.AddTrigger<ProtectionPauseChangedTrigger, ProtectionPauseTriggerControl>();
 
-        // 自动化行动：暂停/恢复（可逆）、立即注入/弹射。
+        // 自动化行动：暂停/恢复（可逆）、立即注入/弹射、基准/临时延迟。
         services.AddAction<PauseProtectionAction>();
+        services.AddAction<ResumeProtectionAction>();
         services.AddAction<InjectNowAction>();
         services.AddAction<EjectNowAction>();
         services.AddAction<SetDelayAction, SetDelayActionControl>();
+        services.AddAction<TemporaryDelayAction, TemporaryDelayActionControl>();
+        services.AddAction<ClearTemporaryDelayAction>();
 
         // 自动化规则：摄像头当前是否正被访问（无配置，内联处理器）。
         services.AddRule("privacy.island.rule.cameraActive", "摄像头正在被访问", "",
