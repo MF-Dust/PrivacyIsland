@@ -1,24 +1,38 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using PrivacyIsland.Config;
 
 namespace PrivacyIsland.Notification;
 
-public sealed class CameraNotificationSettings
+public sealed class CameraNotificationSettings : ObservableRecipient
 {
-    public bool NotifyOnStart { get; set; } = true;
-    public bool NotifyOnWatching { get; set; } = true;
-    public bool NotifyOnStop { get; set; } = true;
-    public bool SpeechEnabled { get; set; } = false;
-    public int OverlayDurationSeconds { get; set; } = 5;
+    bool _notifyOnStart = true;
+    bool _notifyOnWatching = true;
+    bool _notifyOnStop = true;
+    bool _speechEnabled;
+    int _overlayDurationSeconds = 5;
+    string _textOnStart = "起风了";
+    string _textOnWatching = "风好大";
+    string _textOnStop = "风停了";
+    string _colorOnStart = "#FF0000";
+    string _colorOnWatching = "#FFA500";
+    string _colorOnStop = "#FF69B4";
+    bool _hasMigratedPluginConfig;
 
-    public string TextOnStart { get; set; } = "起风了";
-    public string TextOnWatching { get; set; } = "风好大";
-    public string TextOnStop { get; set; } = "风停了";
+    public bool NotifyOnStart { get => _notifyOnStart; set => SetProperty(ref _notifyOnStart, value); }
+    public bool NotifyOnWatching { get => _notifyOnWatching; set => SetProperty(ref _notifyOnWatching, value); }
+    public bool NotifyOnStop { get => _notifyOnStop; set => SetProperty(ref _notifyOnStop, value); }
+    public bool SpeechEnabled { get => _speechEnabled; set => SetProperty(ref _speechEnabled, value); }
+    public int OverlayDurationSeconds { get => _overlayDurationSeconds; set => SetProperty(ref _overlayDurationSeconds, value); }
 
-    public string ColorOnStart { get; set; } = "#FF0000";
-    public string ColorOnWatching { get; set; } = "#FFA500";
-    public string ColorOnStop { get; set; } = "#FF69B4";
+    public string TextOnStart { get => _textOnStart; set => SetProperty(ref _textOnStart, value); }
+    public string TextOnWatching { get => _textOnWatching; set => SetProperty(ref _textOnWatching, value); }
+    public string TextOnStop { get => _textOnStop; set => SetProperty(ref _textOnStop, value); }
 
-    public bool HasMigratedPluginConfig { get; set; } = false;
+    public string ColorOnStart { get => _colorOnStart; set => SetProperty(ref _colorOnStart, value); }
+    public string ColorOnWatching { get => _colorOnWatching; set => SetProperty(ref _colorOnWatching, value); }
+    public string ColorOnStop { get => _colorOnStop; set => SetProperty(ref _colorOnStop, value); }
+
+    public bool HasMigratedPluginConfig { get => _hasMigratedPluginConfig; set => SetProperty(ref _hasMigratedPluginConfig, value); }
 
     public void Clamp()
     {
