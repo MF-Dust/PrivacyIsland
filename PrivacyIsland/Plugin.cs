@@ -28,7 +28,7 @@ public class Plugin : PluginBase
         services.AddHostedService(sp => sp.GetRequiredService<LessonAwareController>());
 
         // 提醒：摄像头开启/监视/关闭弹 ClassIsland 通知（替代原生覆盖层）。
-        services.AddNotificationProvider<CameraNotificationProvider>();
+        services.AddNotificationProvider<CameraNotificationProvider, CameraNotificationSettingsControl>();
 
         // 自动化触发器：摄像头开启/关闭时。
         services.AddTrigger<CameraStartedTrigger>();

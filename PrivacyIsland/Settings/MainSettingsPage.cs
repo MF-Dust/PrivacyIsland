@@ -21,22 +21,6 @@ public class MainSettingsPage : SettingsPageBase
     readonly NumericUpDown _numMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly NumericUpDown _numMax = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly ToggleSwitch _swStealth = new();
-    readonly ToggleSwitch _swStart = new();
-    readonly ToggleSwitch _swWatching = new();
-    readonly ToggleSwitch _swStop = new();
-    readonly ToggleSwitch _swSpeech = new();
-    readonly NumericUpDown _numDuration = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
-    readonly TextBox _txtStart = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
-    readonly TextBox _txtWatching = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
-    readonly TextBox _txtStop = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
-
-    // 通知颜色（hex 输入 + 色块预览）
-    readonly TextBox _txtColorStart = new() { Width = 110 };
-    readonly TextBox _txtColorWatching = new() { Width = 110 };
-    readonly TextBox _txtColorStop = new() { Width = 110 };
-    readonly Border _swatchStart = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
-    readonly Border _swatchWatching = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
-    readonly Border _swatchStop = new() { Width = 26, Height = 26, CornerRadius = new CornerRadius(4) };
 
     // 课程联动
     readonly ToggleSwitch _swLessonAware = new();
@@ -47,7 +31,6 @@ public class MainSettingsPage : SettingsPageBase
 
     readonly TextBlock _lblStats = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBlock _lblDiag = new() { TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas"), FontSize = 12 };
-    readonly DispatcherTimer _textSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     readonly InfoBar _infoBar = new()
     {
         Title = "提示",
@@ -63,12 +46,6 @@ public class MainSettingsPage : SettingsPageBase
 
     public MainSettingsPage()
     {
-        _textSaveTimer.Tick += (_, _) =>
-        {
-            _textSaveTimer.Stop();
-            SaveConfig();
-        };
-
         var root = new StackPanel { Spacing = 8 };
         root.Classes.Add("settings-container");
         root.Classes.Add("animated-intro");
@@ -77,7 +54,6 @@ public class MainSettingsPage : SettingsPageBase
         root.Children.Add(_infoBar);
         root.Children.Add(DelaySection());
         root.Children.Add(LessonSection());
-        root.Children.Add(NotificationSection());
         root.Children.Add(StatsSection());
         root.Children.Add(TestSection());
 
@@ -130,46 +106,6 @@ public class MainSettingsPage : SettingsPageBase
 
         return Expander(Icons.CalendarFilled, "课程联动", "接入课程表，上课/课间自动切换防护策略",
             enableItem, pauseItem, strongItem, minItem, maxItem);
-    }
-
-    SettingsExpander NotificationSection()
-    {
-        var startItem = Item(Icons.CameraFilled, "摄像头启动时提醒", "捕获开始（进入延迟阶段）时弹出通知", _swStart);
-        var watchingItem = Item(Icons.EyeFilled, "进入监视时提醒", "延迟结束、摄像头实际开始工作时通知", _swWatching);
-        var stopItem = Item(Icons.CameraOffFilled, "摄像头关闭时提醒", "捕获停止时弹出通知", _swStop);
-        var speechItem = Item(Icons.MegaphoneLoudFilled, "语音播报", "通知触发时同步语音播报（需系统 TTS）", _swSpeech);
-        var durationItem = Item(Icons.ClockFilled, "通知显示时长（秒）", "ClassIsland 提醒在屏幕上停留的时间", _numDuration);
-        var txtStartItem = Item(Icons.CameraFilled, "启动提醒文案", "摄像头启动时显示的文字", _txtStart);
-        var txtWatchingItem = Item(Icons.EyeFilled, "监视提醒文案", "进入监视状态时显示的文字", _txtWatching);
-        var txtStopItem = Item(Icons.CameraOffFilled, "关闭提醒文案", "摄像头关闭时显示的文字", _txtStop);
-        var colStartItem = Item(Icons.CameraFilled, "启动提醒颜色", "hex 颜色，如 #FF0000；非法值回退默认", ColorFooter(_txtColorStart, _swatchStart));
-        var colWatchingItem = Item(Icons.EyeFilled, "监视提醒颜色", "hex 颜色，如 #FFA500；非法值回退默认", ColorFooter(_txtColorWatching, _swatchWatching));
-        var colStopItem = Item(Icons.CameraOffFilled, "关闭提醒颜色", "hex 颜色，如 #FF69B4；非法值回退默认", ColorFooter(_txtColorStop, _swatchStop));
-
-        return Expander(Icons.MegaphoneFilled, "提醒设置", "控制 ClassIsland 通知的开关、时长、文案与颜色",
-            startItem, watchingItem, stopItem, speechItem, durationItem,
-            txtStartItem, txtWatchingItem, txtStopItem,
-            colStartItem, colWatchingItem, colStopItem);
-    }
-
-    static Control ColorFooter(TextBox box, Border swatch)
-    {
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children = { box, swatch },
-        };
-    }
-
-    /// <summary>把 hex 文本解析为色块背景，非法/空回退灰色。</summary>
-    static void UpdateSwatch(TextBox box, Border swatch)
-    {
-        var hex = box.Text?.Trim();
-        swatch.Background = !string.IsNullOrWhiteSpace(hex) && Color.TryParse(hex, out var c)
-            ? new SolidColorBrush(c)
-            : new SolidColorBrush(Colors.Gray);
     }
 
     SettingsExpander StatsSection()
@@ -304,55 +240,19 @@ public class MainSettingsPage : SettingsPageBase
     {
         _numMin.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _numMax.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
-        _numDuration.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _swStealth.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
-        _swStart.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
-        _swWatching.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
-        _swStop.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
-        _swSpeech.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
 
         _swLessonAware.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swPauseInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swStrongDelayInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _numClassMin.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _numClassMax.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
-
-        WireTextAutosave(_txtStart);
-        WireTextAutosave(_txtWatching);
-        WireTextAutosave(_txtStop);
-        WireColorAutosave(_txtColorStart, _swatchStart);
-        WireColorAutosave(_txtColorWatching, _swatchWatching);
-        WireColorAutosave(_txtColorStop, _swatchStop);
     }
 
-    void WireColorAutosave(TextBox box, Border swatch)
-    {
-        box.PropertyChanged += (_, e) =>
-        {
-            if (e.Property != TextBox.TextProperty) return;
-            UpdateSwatch(box, swatch);
-            MarkConfigDirty(true, debounce: true);
-        };
-        box.LostFocus += (_, _) => FlushConfig();
-    }
-
-    void WireTextAutosave(TextBox textBox)
-    {
-        textBox.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == TextBox.TextProperty, debounce: true);
-        textBox.LostFocus += (_, _) => FlushConfig();
-    }
-
-    void MarkConfigDirty(bool changed, bool debounce = false)
+    void MarkConfigDirty(bool changed)
     {
         if (!changed || _loading) return;
         _configDirty = true;
-        if (debounce)
-        {
-            _textSaveTimer.Stop();
-            _textSaveTimer.Start();
-            return;
-        }
-
         SaveConfig();
     }
 
@@ -373,20 +273,6 @@ public class MainSettingsPage : SettingsPageBase
         _numMin.Value = _cfg.MinDelaySeconds;
         _numMax.Value = _cfg.MaxDelaySeconds;
         _swStealth.IsChecked = _cfg.StealthMode;
-        _swStart.IsChecked = _cfg.NotifyOnStart;
-        _swWatching.IsChecked = _cfg.NotifyOnWatching;
-        _swStop.IsChecked = _cfg.NotifyOnStop;
-        _swSpeech.IsChecked = _cfg.SpeechEnabled;
-        _numDuration.Value = _cfg.OverlayDurationSeconds;
-        _txtStart.Text = _cfg.TextOnStart;
-        _txtWatching.Text = _cfg.TextOnWatching;
-        _txtStop.Text = _cfg.TextOnStop;
-        _txtColorStart.Text = _cfg.ColorOnStart;
-        _txtColorWatching.Text = _cfg.ColorOnWatching;
-        _txtColorStop.Text = _cfg.ColorOnStop;
-        UpdateSwatch(_txtColorStart, _swatchStart);
-        UpdateSwatch(_txtColorWatching, _swatchWatching);
-        UpdateSwatch(_txtColorStop, _swatchStop);
         _swLessonAware.IsChecked = _cfg.LessonAwareEnabled;
         _swPauseInClass.IsChecked = _cfg.PauseDuringClass;
         _swStrongDelayInClass.IsChecked = _cfg.StrongerDelayDuringClass;
@@ -445,17 +331,6 @@ public class MainSettingsPage : SettingsPageBase
         _cfg.MinDelaySeconds = min;
         _cfg.MaxDelaySeconds = max;
         _cfg.StealthMode = _swStealth.IsChecked == true;
-        _cfg.NotifyOnStart = _swStart.IsChecked == true;
-        _cfg.NotifyOnWatching = _swWatching.IsChecked == true;
-        _cfg.NotifyOnStop = _swStop.IsChecked == true;
-        _cfg.SpeechEnabled = _swSpeech.IsChecked == true;
-        _cfg.OverlayDurationSeconds = (int)(_numDuration.Value ?? 5);
-        _cfg.TextOnStart = _txtStart.Text ?? "起风了";
-        _cfg.TextOnWatching = _txtWatching.Text ?? "风好大";
-        _cfg.TextOnStop = _txtStop.Text ?? "风停了";
-        _cfg.ColorOnStart = string.IsNullOrWhiteSpace(_txtColorStart.Text) ? "#FF0000" : _txtColorStart.Text!.Trim();
-        _cfg.ColorOnWatching = string.IsNullOrWhiteSpace(_txtColorWatching.Text) ? "#FFA500" : _txtColorWatching.Text!.Trim();
-        _cfg.ColorOnStop = string.IsNullOrWhiteSpace(_txtColorStop.Text) ? "#FF69B4" : _txtColorStop.Text!.Trim();
 
         int classMin = (int)(_numClassMin.Value ?? 10);
         int classMax = (int)(_numClassMax.Value ?? 20);
@@ -480,7 +355,6 @@ public class MainSettingsPage : SettingsPageBase
 
     void FlushConfig()
     {
-        _textSaveTimer.Stop();
         SaveConfig();
     }
 

@@ -3,6 +3,7 @@ using ClassIsland.Core.Abstractions.Services.NotificationProviders;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Models.Notification;
 using Microsoft.Extensions.Logging;
+using PrivacyIsland.Config;
 using PrivacyIsland.Ipc;
 using PrivacyIsland.Logging;
 
@@ -14,7 +15,7 @@ namespace PrivacyIsland.Notification;
 /// </summary>
 [NotificationProviderInfo("b1e7c0a2-3d4f-4a6b-9c1d-2e3f4a5b6c7d", "摄像头防护", "希沃摄像头访问提醒")]
 [NotificationChannelInfo(ChannelId, "摄像头访问", "", "摄像头开启/监视/关闭时提醒")]
-public class CameraNotificationProvider : NotificationProviderBase
+public class CameraNotificationProvider : NotificationProviderBase<CameraNotificationSettings>
 {
     const string ChannelId = "c2f8d1b3-4e5a-4b7c-8d2e-3f4a5b6c7d8e";
 
@@ -39,26 +40,29 @@ public class CameraNotificationProvider : NotificationProviderBase
 
     void OnState(CaptureSnapshot s)
     {
-        var cfg = PrivacyIslandRuntime.Config;
+        var cfg = Settings;
+        TryMigrateLegacyConfig(cfg, PrivacyIslandRuntime.Config);
+        cfg.Clamp();
+
         string text;
         Color color;
         bool enabled;
         switch (s.State)
         {
             case IpcProtocol.StatusStart:
-                text = OrDefault(cfg?.TextOnStart, "起风了");
-                color = ParseColor(cfg?.ColorOnStart, Color.FromRgb(255, 0, 0));
-                enabled = cfg?.NotifyOnStart ?? true;
+                text = OrDefault(cfg.TextOnStart, "起风了");
+                color = ParseColor(cfg.ColorOnStart, Color.FromRgb(255, 0, 0));
+                enabled = cfg.NotifyOnStart;
                 break;
             case IpcProtocol.StatusWatching:
-                text = OrDefault(cfg?.TextOnWatching, "风好大");
-                color = ParseColor(cfg?.ColorOnWatching, Color.FromRgb(255, 165, 0));
-                enabled = cfg?.NotifyOnWatching ?? true;
+                text = OrDefault(cfg.TextOnWatching, "风好大");
+                color = ParseColor(cfg.ColorOnWatching, Color.FromRgb(255, 165, 0));
+                enabled = cfg.NotifyOnWatching;
                 break;
             case IpcProtocol.StatusStop:
-                text = OrDefault(cfg?.TextOnStop, "风停了");
-                color = ParseColor(cfg?.ColorOnStop, Color.FromRgb(255, 105, 180));
-                enabled = cfg?.NotifyOnStop ?? true;
+                text = OrDefault(cfg.TextOnStop, "风停了");
+                color = ParseColor(cfg.ColorOnStop, Color.FromRgb(255, 105, 180));
+                enabled = cfg.NotifyOnStop;
                 break;
             default:
                 return;
@@ -66,8 +70,8 @@ public class CameraNotificationProvider : NotificationProviderBase
 
         if (!enabled) return;
 
-        bool speech = cfg?.SpeechEnabled ?? false;
-        var duration = TimeSpan.FromSeconds(cfg?.OverlayDurationSeconds ?? 5);
+        bool speech = cfg.SpeechEnabled;
+        var duration = TimeSpan.FromSeconds(cfg.OverlayDurationSeconds);
         var brush = new SolidColorBrush(color);
 
         try
@@ -95,6 +99,14 @@ public class CameraNotificationProvider : NotificationProviderBase
     /// <summary>解析 hex 颜色字符串，非法/空则回退默认（容错，不抛异常）。</summary>
     static Color ParseColor(string? hex, Color fallback)
         => !string.IsNullOrWhiteSpace(hex) && Color.TryParse(hex.Trim(), out var c) ? c : fallback;
+
+    static void TryMigrateLegacyConfig(CameraNotificationSettings settings, PluginConfig? legacyConfig)
+    {
+        if (settings.HasMigratedPluginConfig || legacyConfig == null) return;
+
+        settings.ApplyLegacyConfig(legacyConfig);
+        PluginLog.Info("[提醒] 已从旧插件配置迁移提醒设置到 ClassIsland 提醒提供方设置");
+    }
 
     void LogInformation(string message)
     {
