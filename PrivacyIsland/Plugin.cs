@@ -47,7 +47,7 @@ public class Plugin : PluginBase
         services.AddRule("privacy.island.rule.paused", "防护已暂停", "",
             _ => PrivacyIslandRuntime.IsPaused);
 
-        // 设置页：延迟/隐身/语音/统计/日志。
+        // 设置页：延迟/隐身/统计/日志。提醒选项由通知提供方设置页承载。
         services.AddSettingsPage<MainSettingsPage>();
     }
 }
