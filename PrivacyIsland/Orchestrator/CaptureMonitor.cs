@@ -25,6 +25,12 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     const string InjectorFileName = "nmm_injector.exe";
     static readonly TimeSpan InjectionRetryInterval = TimeSpan.FromSeconds(15);
 
+    // 自愈阈值。反汇编确认 hook DLL 有一条专用心跳线程：每 ~5s（WaitForSingleObject 超时 5000ms）
+    // 在互斥锁下把 GetTickCount() 写入 heartbeat 偏移；不随捕获活动变化，是纯粹的「DLL 存活」信号。
+    static readonly TimeSpan HookConfirmWindow = TimeSpan.FromSeconds(10);   // 注入后多久没 Ready/心跳/帧算「未确认存活」（≈2 拍心跳宽限）
+    static readonly TimeSpan HeartbeatStaleAfter = TimeSpan.FromSeconds(15); // 心跳多久没变算「冻结」（≈3 拍，5s 一拍）
+    const int MaxSelfHealReinjects = 2;                                      // 每个 pid 自愈重注入次数上限
+
     readonly string _folder;
     readonly ILogger<CaptureMonitor> _logger;
     Timer? _timer;
@@ -35,6 +41,16 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     string _lastInjectionMessage = "尚未尝试注入";
     int _polling;             // 防止轮询重入
     bool _awaitingDelay;      // 收到 start 后，等首条 "Delay N s" 以统计本次延迟
+
+    // OS 独立探测 + 融合/自愈状态（除标注外仅 timer 线程访问）。
+    readonly CameraUsageProbe _probe = new();
+    volatile bool _osCameraInUse;    // media_capture 的 OS 探测结果（timer 写，诊断读）
+    volatile bool _fusedActive;      // 融合后的有效活动态（timer 写，规则/诊断读）
+    bool _syntheticActive;           // 是否已补发过合成 start（避免重复）
+    DateTime _injectedUtc;           // 本 pid 最近一次成功注入时刻
+    int _healthPid;                  // 当前健康跟踪的 pid
+    int _reinjectBudget;             // 该 pid 剩余自愈重注入预算
+    bool _loggedTargetPid;           // 发现/消失日志去抖
 
     // 分层暂停：多个来源（manual/automation/lesson）可各自请求暂停，任一生效即暂停。
     readonly object _pauseGate = new();
@@ -95,22 +111,115 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     void PollOnce()
     {
         var target = FindTargetProcess();
+
+        // 每拍都跑 OS 探测 + 融合——即使已注入的 pid 也要跑，「已开却没测到」正是发生在这里。
+        bool osInUse = target?.ExecutablePath is string p && p.Length > 0 && _probe.IsWebcamInUseBy(p);
+        _osCameraInUse = osInUse;
+        UpdateFusion(target, osInUse);
+
         if (target is null)
         {
+            if (_loggedTargetPid) { PluginLog.Info("media_capture.exe 已退出，等待下次出现"); _loggedTargetPid = false; }
+            if (Bridge?.CameraActive == true) Bridge.ForceInactive("media_capture 已退出");
+            _fusedActive = false;   // 目标已消失，融合态立即置否，不等下一拍
             _lastInjectedPid = 0;
             _lastAttemptPid = 0;
             return;
         }
 
-        if (target.Pid == _lastInjectedPid) return;     // 该进程实例已成功处理
+        if (!_loggedTargetPid) { PluginLog.Info($"发现 media_capture.exe (pid={target.Pid}, {target.DisplayName})"); _loggedTargetPid = true; }
+
+        if (target.Pid == _lastInjectedPid) { MaybeSelfHeal(target, osInUse); return; }   // 已处理——但仍监控 hook 是否真活着
         if (target.Pid == _lastAttemptPid &&
             DateTime.UtcNow - _lastAttemptUtc < InjectionRetryInterval)
             return;                                     // 失败后冷却，避免每秒刷日志/拉起注入器
 
         _lastAttemptPid = target.Pid;
         _lastAttemptUtc = DateTime.UtcNow;
+        if (_healthPid != target.Pid) { _healthPid = target.Pid; _reinjectBudget = MaxSelfHealReinjects; }
         var result = Inject(target);
-        if (result.Success) _lastInjectedPid = target.Pid;
+        if (result.Success) { _lastInjectedPid = target.Pid; _injectedUtc = DateTime.UtcNow; }
+    }
+
+    /// <summary>
+    /// 融合有效活动态 = hook latch OR（启用融合 &amp;&amp; OS 探测）。hook 沉默但 OS 说在用时补发合成帧，
+    /// 让既有提醒/触发器/规则照常工作，而不污染 bridge 的纯 hook latch。
+    /// </summary>
+    void UpdateFusion(TargetProcessInfo? target, bool osInUse)
+    {
+        bool hookActive = Bridge?.CameraActive ?? false;
+        bool fuseOn = Config.FuseOsProbe;
+        bool fused = hookActive || (fuseOn && osInUse);
+        _fusedActive = fused;
+
+        // 融合关闭或目标消失：结束可能在进行的合成会话（补 stop 让 start/stop 配对）。
+        if (!fuseOn || target is null) { EndSyntheticSession(hookActive); return; }
+
+        var live = Bridge?.GetLiveness();
+        bool hookSilent = live is null ||
+            live.LastFrameUtc is not DateTime lf || DateTime.UtcNow - lf > TimeSpan.FromSeconds(5);
+
+        // 关键告警：这正是「摄像头已开但插件没获取到」。
+        if (osInUse && !hookActive && hookSilent)
+            PluginLog.Warn($"检测到 media_capture 正在使用摄像头，但 hook 通道无上报（可能未生效）：pid={target.Pid}");
+
+        if (!_syntheticActive && osInUse && !hookActive && hookSilent)
+        {
+            _syntheticActive = true;   // OS-only 起：补一帧 start，仅当 hook 未在报，避免与真 hook 帧重复提醒
+            RaiseStateOnUi(new CaptureSnapshot(IpcProtocol.StatusStart, 0, "OS 探测：摄像头使用中（hook 未上报）"));
+        }
+        else if (_syntheticActive && (!osInUse || hookActive))
+        {
+            EndSyntheticSession(hookActive);   // OS 停 或 真 hook 接管
+        }
+    }
+
+    /// <summary>结束合成会话：清标志；仅当真 hook 未接管（摄像头确已停）才补一帧 stop 让 start/stop 配对。</summary>
+    void EndSyntheticSession(bool hookActive)
+    {
+        if (!_syntheticActive) return;
+        _syntheticActive = false;
+        if (!hookActive)   // hook 正报则摄像头仍开（真帧会自行发 stop），不补合成 stop
+            RaiseStateOnUi(new CaptureSnapshot(IpcProtocol.StatusStop, 0, "OS 探测：摄像头已停止"));
+    }
+
+    /// <summary>已注入 pid 上的自愈：确认 hook 是否真的在跑，未生效/冻结则有上限地重注入。</summary>
+    void MaybeSelfHeal(TargetProcessInfo target, bool osInUse)
+    {
+        var live = Bridge?.GetLiveness();
+        if (live is null) return;
+        var now = DateTime.UtcNow;
+
+        bool hookAlive = live.ReadySeen ||
+            (live.HeartbeatSupported && live.LastHeartbeatChangeUtc is DateTime hb && now - hb < HeartbeatStaleAfter);
+        bool recentFrame = live.LastFrameUtc is DateTime lf && now - lf < TimeSpan.FromSeconds(30);
+
+        // A) 从未确认存活：注入宽限期过后仍无 Ready/心跳/帧。
+        //    心跳每 5s 一拍且与摄像头是否在用无关，所以正常注入后 hookAlive 很快为真；
+        //    仅在 OS 确认摄像头在用时才重注入（正是「已开却没测到」），否则暂不上报是正常的，不折腾（避免目标慢启动期空重注入）。
+        if (!hookAlive && !recentFrame && now - _injectedUtc > HookConfirmWindow)
+        {
+            if (osInUse)
+            {
+                PluginLog.Warn($"hook 可能未生效（pid={target.Pid}）：OS 探测到在用但无 Ready/心跳/上报。");
+                ScheduleReinject(target, "hook 未确认存活");
+            }
+            return;
+        }
+
+        // B) 曾经存活后心跳冻结：DLL 疑似卸载/崩溃 ⇒ 同 pid 重注入。仅在心跳被支持时判定。
+        if (live.HeartbeatSupported && live.LastHeartbeatChangeUtc is DateTime hb2 && now - hb2 > HeartbeatStaleAfter)
+            ScheduleReinject(target, "心跳冻结（DLL 可能已卸载/崩溃）");
+    }
+
+    void ScheduleReinject(TargetProcessInfo target, string why)
+    {
+        if (_reinjectBudget <= 0) return;                       // 预算封顶，杜绝注入器刷屏
+        _reinjectBudget--;
+        PluginLog.Warn($"自愈重注入（{why}），剩余预算 {_reinjectBudget}：pid={target.Pid}");
+        _lastInjectedPid = 0;                                   // 解闩
+        _lastAttemptPid = 0;                                    // 让下一拍立即重注入（对该 pid 的 15s 冷却失效）
+        _lastAttemptUtc = DateTime.UtcNow - InjectionRetryInterval;
     }
 
     static TargetProcessInfo? FindTargetProcess()
@@ -191,6 +300,9 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     }
 
     // ---- 控制面（供自动化行动 / 设置页 / 课程控制器调用）----
+
+    /// <summary>融合后的有效活动态（hook latch 或 OS 探测），供 PrivacyIslandRuntime.CameraActive/规则读取。</summary>
+    public bool EffectiveCameraActive => _fusedActive;
 
     /// <summary>当前是否处于暂停态（任一暂停源生效）。供规则读取。</summary>
     public bool EffectivePaused
@@ -284,6 +396,17 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         string targetSummary = target is null ? "否" : $"是 (pid={target.Pid}, {target.DisplayName})";
         string bootSummary = target is null ? "未检测" : DescribeBootConfig(target.ExecutablePath);
         string portsSummary = target is null ? "未检测" : DescribeListeningPorts(target.Pid);
+
+        var live = Bridge?.GetLiveness();
+        bool hookActive = Bridge?.CameraActive == true;
+        var inUseApps = _probe.InUseApps();
+        string Age(DateTime? t) => t is DateTime u ? $"{(DateTime.UtcNow - u).TotalSeconds:0}s 前" : "从未";
+        string hbLine = live is null ? "未知"
+            : !live.HeartbeatSupported ? "不支持（DLL 从未写入，退化为无心跳）"
+            : $"{live.Heartbeat}（{Age(live.LastHeartbeatChangeUtc)}变化）";
+        string mismatch = target is { Is32Bit: false, Machine: { Length: > 0 } m }
+            ? $"⚠ 目标非 x86（{m}），x86 注入器/DLL 无法注入" : "无";
+
         return
             $"注入器存在: {(File.Exists(_injectorPath) ? "是" : "否")}\n" +
             $"hook DLL 存在: {(File.Exists(_dllPath) ? "是" : "否")}\n" +
@@ -292,15 +415,46 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             $"检测到 media_capture.exe: {targetSummary}\n" +
             $"目标路径: {DisplayPath(target?.ExecutablePath)}\n" +
             $"目标版本: {DisplayVersion(target)}\n" +
+            $"位数匹配: {mismatch}\n" +
             $"目标 BootConfig: {bootSummary}\n" +
             $"目标监听端口: {portsSummary}\n" +
+            $"目标 ESTABLISHED 连接数: {DescribeEstablished(target?.Pid ?? 0)}\n" +
             $"反编译接口: {MediaCaptureProtocol.CapabilitySummary}\n" +
             $"已注入的 pid: {(_lastInjectedPid == 0 ? "无" : _lastInjectedPid.ToString())}\n" +
             $"最近注入结果: {_lastInjectionMessage} (code={_lastInjectionCode})\n" +
-            $"摄像头当前活动: {(Bridge?.CameraActive == true ? "是" : "否")}";
+            $"最近上报帧: {Age(live?.LastFrameUtc)}（currState={StateName(live?.LastPolledState)}）\n" +
+            $"心跳: {hbLine}\n" +
+            $"StatusReady: {(live?.ReadySeen == true ? $"已见（{Age(live.ReadySeenUtc)}）" : "未见")}\n" +
+            $"hook 摄像头活动: {(hookActive ? "是" : "否")}\n" +
+            $"OS 摄像头在用(media_capture): {(_osCameraInUse ? "是" : "否")}\n" +
+            $"OS 摄像头在用(任意应用): {(inUseApps.Count == 0 ? "无" : string.Join("; ", inUseApps))}\n" +
+            $"融合有效活动: {(_fusedActive ? "是" : "否")}\n" +
+            $"hook 与 OS 一致性: {(hookActive == _osCameraInUse ? "一致" : "不一致（其一未捕获）")}";
     }
 
-    static bool IsAdmin()
+    static string StateName(int? state) => state switch
+    {
+        IpcProtocol.StatusWaiting => "waiting",
+        IpcProtocol.StatusStart => "start",
+        IpcProtocol.StatusWatching => "watching",
+        IpcProtocol.StatusStop => "stop",
+        IpcProtocol.StatusError => "error",
+        IpcProtocol.StatusLog => "log",
+        IpcProtocol.StatusInfo => "info",
+        IpcProtocol.StatusReady => "ready",
+        null => "未知",
+        _ => state.ToString()!,
+    };
+
+    static string DescribeEstablished(int pid)
+    {
+        if (pid <= 0) return "未检测";
+        try { return TcpTable.CountEstablished(pid).ToString(); }
+        catch (Exception ex) { return "读取失败：" + ex.Message; }
+    }
+
+    /// <summary>当前进程是否以管理员运行。供设置页/Runtime 做结构化判断，替代脆弱的诊断字符串匹配。</summary>
+    public static bool IsAdmin()
     {
         try
         {
@@ -515,6 +669,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
                 }
                 break;
 
+            case IpcProtocol.StatusWatching:
+                PluginLog.CaptureWatching(s.Message);
+                break;
+
             case IpcProtocol.StatusStop:
                 PluginLog.CaptureStop(s.Message);
                 break;
@@ -529,7 +687,12 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
                 break;
         }
 
-        // 提醒/触发器会触达 Avalonia UI，必须在 UI 线程分发（读线程是后台线程）。
+        RaiseStateOnUi(s);
+    }
+
+    /// <summary>在 Avalonia UI 线程分发状态帧（提醒/触发器会触达 UI；读线程与 timer 线程都是后台线程）。</summary>
+    static void RaiseStateOnUi(CaptureSnapshot s)
+    {
         var ui = Avalonia.Threading.Dispatcher.UIThread;
         if (ui.CheckAccess()) PrivacyIslandRuntime.RaiseState(s);
         else ui.Post(() => PrivacyIslandRuntime.RaiseState(s));

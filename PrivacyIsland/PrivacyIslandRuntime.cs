@@ -28,8 +28,11 @@ public static class PrivacyIslandRuntime
         try { ProtectionPauseChanged?.Invoke(paused); } catch { /* 订阅方异常隔离 */ }
     }
 
-    /// <summary>摄像头当前是否正被访问，供规则读取。</summary>
-    public static bool CameraActive => Monitor?.Bridge?.CameraActive ?? false;
+    /// <summary>摄像头当前是否正被访问（融合 hook 与 OS 探测），供规则读取。</summary>
+    public static bool CameraActive => Monitor?.EffectiveCameraActive ?? false;
+
+    /// <summary>当前是否以管理员运行（跨进程注入通常需要）。供设置页做结构化判断。</summary>
+    public static bool IsAdministrator => CaptureMonitor.IsAdmin();
 
     /// <summary>防护当前是否处于暂停态（任一暂停来源生效），供规则读取。</summary>
     public static bool IsPaused => Monitor?.EffectivePaused ?? false;

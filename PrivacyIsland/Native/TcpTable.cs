@@ -8,33 +8,50 @@ internal static class TcpTable
     const int AfInet = 2;
     const int TcpTableOwnerPidAll = 5;
     const uint MibTcpStateListen = 2;
+    const uint MibTcpStateEstab = 5;
 
     public static IReadOnlyList<int> GetListeningPorts(int pid)
     {
         if (pid <= 0) return Array.Empty<int>();
 
+        var ports = new SortedSet<int>();
+        EnumerateRows(row =>
+        {
+            if (row.State == MibTcpStateListen && row.OwningPid == (uint)pid)
+                ports.Add(PortFromNetworkOrder(row.LocalPort));
+        });
+        return ports.ToArray();
+    }
+
+    /// <summary>目标进程当前的 ESTABLISHED 连接数。media_capture 是 RPC 服务器，活跃客户端连接是又一条 hook 无关的印证。</summary>
+    public static int CountEstablished(int pid)
+    {
+        if (pid <= 0) return 0;
+
+        int count = 0;
+        EnumerateRows(row =>
+        {
+            if (row.State == MibTcpStateEstab && row.OwningPid == (uint)pid) count++;
+        });
+        return count;
+    }
+
+    static void EnumerateRows(Action<MibTcpRowOwnerPid> onRow)
+    {
         int size = 0;
-        uint result = GetExtendedTcpTable(IntPtr.Zero, ref size, true, AfInet, TcpTableOwnerPidAll, 0);
-        if (size <= 0) return Array.Empty<int>();
+        GetExtendedTcpTable(IntPtr.Zero, ref size, true, AfInet, TcpTableOwnerPidAll, 0);
+        if (size <= 0) return;
 
         IntPtr buffer = Marshal.AllocHGlobal(size);
         try
         {
-            result = GetExtendedTcpTable(buffer, ref size, true, AfInet, TcpTableOwnerPidAll, 0);
-            if (result != 0) return Array.Empty<int>();
+            if (GetExtendedTcpTable(buffer, ref size, true, AfInet, TcpTableOwnerPidAll, 0) != 0) return;
 
             int count = Marshal.ReadInt32(buffer);
             int rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
             IntPtr rowPtr = IntPtr.Add(buffer, 4);
-            var ports = new SortedSet<int>();
             for (int i = 0; i < count; i++)
-            {
-                var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(rowPtr, i * rowSize));
-                if (row.State != MibTcpStateListen || row.OwningPid != (uint)pid) continue;
-                ports.Add(PortFromNetworkOrder(row.LocalPort));
-            }
-
-            return ports.ToArray();
+                onRow(Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(rowPtr, i * rowSize)));
         }
         finally
         {

@@ -15,7 +15,9 @@ const int OffLogBuffer = 0;
 const int OffCurrState = 2048;
 const int OffMinDelay = 2056;
 const int OffMaxDelay = 2060;
+const int OffHeartbeat = 2064;
 const int OffPaused = 2068;
+const int OffCaptureCount = 2072;
 const int OffStealth = 2076;
 const int Size = 2080;
 const int StatusStart = 1;
@@ -48,7 +50,7 @@ using (var bridge = new SharedMemoryBridge())
     using var mutex = new Mutex(false, @"Local\LilithMutex");
     using var evt = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\LilithLogEvent");
 
-    void DllWrite(string msg, int state)
+    void DllWrite(string msg, int state, uint hb = 0, uint cc = 0)
     {
         Assert(mutex.WaitOne(2000), "DLL 拿到互斥锁");
         try
@@ -58,9 +60,19 @@ using (var bridge = new SharedMemoryBridge())
             Array.Copy(wide, buf, Math.Min(wide.Length, buf.Length));
             view.WriteArray(OffLogBuffer, buf, 0, buf.Length);
             view.Write(OffCurrState, state);
+            view.Write(OffHeartbeat, hb);
+            view.Write(OffCaptureCount, cc);
         }
         finally { mutex.ReleaseMutex(); }
         evt.Set();
+    }
+
+    // 只改 currState 不发信号，模拟「丢了一次 SetEvent」，用于验证读线程轮询补偿。
+    void DllSetStateNoSignal(int state)
+    {
+        Assert(mutex.WaitOne(2000), "DLL 拿到互斥锁(无信号)");
+        try { view.Write(OffCurrState, state); }
+        finally { mutex.ReleaseMutex(); }
     }
 
     CaptureSnapshot WaitOne()
@@ -100,6 +112,34 @@ using (var bridge = new SharedMemoryBridge())
     bridge.Simulate(StatusStop, "（模拟）stop");
     var s4 = WaitOne();
     Assert(s4.State == StatusStop && !bridge.CameraActive, "Simulate stop 后 CameraActive==false");
+
+    // 5) 读未用字段：heartbeat/captureCount 应被解码进快照。
+    DllWrite("DS capture start!", StatusStart, hb: 7, cc: 3);
+    var s5 = WaitOne();
+    Assert(s5.Heartbeat == 7 && s5.CaptureCount == 3, $"解码 heartbeat/captureCount（得到 hb={s5.Heartbeat}, cc={s5.CaptureCount}）");
+    Assert(bridge.GetLiveness().HeartbeatSupported, "收到非零心跳后 HeartbeatSupported==true");
+
+    // 6) 轮询补偿：只改 currState=stop 不发信号，读线程应在 ~1s 轮询里收敛 CameraActive。
+    Assert(bridge.CameraActive, "补偿前置：当前为 active");
+    DllSetStateNoSignal(StatusStop);
+    Assert(got.WaitOne(2500), "轮询在 ~1s 内补偿遗漏的 stop（无事件也收敛）");
+    Assert(!bridge.CameraActive, "reconcile 后 CameraActive == false");
+}
+
+// 7) OS 探测：用假种子验证判据/匹配，无需真摄像头或注册表。
+{
+    const string path = @"C:\x\media_capture.exe";
+    var inUse = new PrivacyIsland.Native.CameraUsageProbe(
+        () => new[] { new PrivacyIsland.Native.CameraUsageProbe.WebcamUsage(path, 1, 0, false) });
+    Assert(inUse.IsWebcamInUseBy(path), "OS 探测：Stop==0 且 Start!=0 判为在用");
+    Assert(inUse.IsWebcamInUseBy(path.ToUpperInvariant()), "OS 探测：路径大小写不敏感");
+    Assert(!inUse.IsWebcamInUseBy(@"C:\other.exe"), "OS 探测：其他路径不误报");
+    Assert(inUse.InUseApps().Contains(path), "OS 探测：InUseApps 含在用路径");
+
+    var notInUse = new PrivacyIsland.Native.CameraUsageProbe(
+        () => new[] { new PrivacyIsland.Native.CameraUsageProbe.WebcamUsage(path, 1, 5, false) });
+    Assert(!notInUse.IsWebcamInUseBy(path), "OS 探测：Stop!=0 判为未在用");
+    Assert(notInUse.InUseApps().Count == 0, "OS 探测：无在用应用时 InUseApps 为空");
 }
 
 Console.WriteLine("PASS");

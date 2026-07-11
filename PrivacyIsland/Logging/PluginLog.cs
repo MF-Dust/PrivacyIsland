@@ -18,6 +18,7 @@ internal static class PluginLog
     public static void Warn(string msg) => Write(LogLevel.Warning, msg);
     public static void Error(string msg) => Write(LogLevel.Error, msg);
     public static void CaptureStart(string msg) => Write(LogLevel.Information, $"[CAPTURE_START] {msg}");
+    public static void CaptureWatching(string msg) => Write(LogLevel.Information, $"[CAPTURE_WATCHING] {msg}");
     public static void CaptureStop(string msg) => Write(LogLevel.Information, $"[CAPTURE_STOP] {msg}");
 
     static void Write(LogLevel level, string msg)

@@ -5,8 +5,25 @@ using System.Threading;
 
 namespace PrivacyIsland.Ipc;
 
-/// <summary>DLL 经共享内存上报的一帧状态快照。</summary>
-public sealed record CaptureSnapshot(int State, int Error, string Message);
+/// <summary>
+/// DLL 经共享内存上报的一帧状态快照。
+/// 反汇编确认：Heartbeat 由 DLL 专用线程每 ~5s 写入 GetTickCount()（存活信号，与捕获无关）；
+/// CaptureCount 当前 DLL 从不写（保留字段，读出恒为 0）。
+/// </summary>
+public sealed record CaptureSnapshot(int State, int Error, string Message, uint Heartbeat = 0, uint CaptureCount = 0);
+
+/// <summary>共享内存存活快照，供编排器判断 hook 是否真的在跑（区别于「注入器退出码 0」）。</summary>
+public sealed record IpcLiveness(
+    bool CameraActive,
+    int LastPolledState,
+    DateTime? LastFrameUtc,
+    uint Heartbeat,
+    DateTime? LastHeartbeatChangeUtc,
+    bool HeartbeatSupported,
+    uint CaptureCount,
+    DateTime? LastCaptureCountChangeUtc,
+    bool ReadySeen,
+    DateTime? ReadySeenUtc);
 
 /// <summary>
 /// 主机侧（C#）的共享内存 IPC，替代原生 messager.c。
@@ -28,7 +45,31 @@ public sealed class SharedMemoryBridge : IDisposable
     public event Action<CaptureSnapshot>? StateReceived;
 
     /// <summary>摄像头当前是否正被访问（start→stop 之间为真），供自动化规则读取。</summary>
-    public bool CameraActive { get; private set; }
+    // 主写者是读线程；ForceInactive 由编排器线程置回；读者是规则/timer/UI，容忍陈旧一拍。
+    volatile bool _cameraActive;
+    public bool CameraActive => _cameraActive;
+
+    // ---- 存活跟踪（全部在 _liveGate 下读写；heartbeat/captureCount 是原本从未读的字段）----
+    readonly object _liveGate = new();
+    int _lastPolledState = IpcProtocol.StatusWaiting;
+    DateTime? _lastFrameUtc;            // 最近一次「真实 DLL 事件」（非轮询）
+    uint _lastHeartbeat;
+    DateTime? _lastHeartbeatChangeUtc;
+    bool _heartbeatEverNonZero;        // DLL 从未写非零心跳→视为不支持，下游心跳判据全部跳过
+    uint _lastCaptureCount;
+    DateTime? _lastCaptureCountChangeUtc;
+    bool _readySeen;
+    DateTime? _readySeenUtc;
+
+    /// <summary>快照当前存活信息，供编排器融合/自愈判断。</summary>
+    public IpcLiveness GetLiveness()
+    {
+        lock (_liveGate)
+            return new IpcLiveness(
+                _cameraActive, _lastPolledState, _lastFrameUtc,
+                _lastHeartbeat, _lastHeartbeatChangeUtc, _heartbeatEverNonZero,
+                _lastCaptureCount, _lastCaptureCountChangeUtc, _readySeen, _readySeenUtc);
+    }
 
     /// <summary>创建 IPC 对象并写入初始配置，然后启动读线程。注入 DLL 之前调用。</summary>
     public void Start(int minDelay, int maxDelay, bool stealth)
@@ -66,33 +107,80 @@ public sealed class SharedMemoryBridge : IDisposable
         }
     }
 
+    // 读线程轮询周期：DLL 每次上报会 SetEvent 走快路径；超时则主动读一次共享区，
+    // 补偿丢失的事件信号、刷新心跳/计数存活、校正漂移的 currState。
+    const int PollIntervalMs = 1000;
+
     void ReaderLoop()
     {
         var handles = new WaitHandle[] { _dataEvent!, _quit };
         while (_running)
         {
             int idx;
-            try { idx = WaitHandle.WaitAny(handles); }
+            try { idx = WaitHandle.WaitAny(handles, PollIntervalMs); }
             catch { break; }
-            if (idx == 1) break; // quit
+            if (idx == 1) break;                 // quit
+            bool isEvent = idx == 0;             // 否则 WaitHandle.WaitTimeout（258）→ 轮询
 
             CaptureSnapshot? snap = TryReadSnapshot();
             if (snap is null) continue;
 
-            switch (snap.State)
-            {
-                case IpcProtocol.StatusStart:
-                case IpcProtocol.StatusWatching:
-                    CameraActive = true;
-                    break;
-                case IpcProtocol.StatusStop:
-                    CameraActive = false;
-                    break;
-            }
-
-            try { StateReceived?.Invoke(snap); }
-            catch { /* 订阅方异常不拖垮读线程 */ }
+            UpdateLiveness(snap, isEvent);
+            if (isEvent) DispatchFrame(snap);    // 真实 DLL 帧——快路径不变
+            else ReconcileOnPoll(snap);          // 超时——静默校正，不重复分发已处理的帧
         }
+    }
+
+    void UpdateLiveness(CaptureSnapshot s, bool isEvent)
+    {
+        var now = DateTime.UtcNow;
+        lock (_liveGate)
+        {
+            _lastPolledState = s.State;
+            if (isEvent) _lastFrameUtc = now;
+            if (s.Heartbeat != 0) _heartbeatEverNonZero = true;
+            if (s.Heartbeat != _lastHeartbeat) { _lastHeartbeat = s.Heartbeat; _lastHeartbeatChangeUtc = now; }
+            if (s.CaptureCount != _lastCaptureCount) { _lastCaptureCount = s.CaptureCount; _lastCaptureCountChangeUtc = now; }
+            if (s.State == IpcProtocol.StatusReady) { _readySeen = true; _readySeenUtc = now; }
+        }
+    }
+
+    void DispatchFrame(CaptureSnapshot s)
+    {
+        switch (s.State)
+        {
+            case IpcProtocol.StatusStart:
+            case IpcProtocol.StatusWatching:
+                _cameraActive = true;
+                break;
+            case IpcProtocol.StatusStop:
+                _cameraActive = false;
+                break;
+        }
+        try { StateReceived?.Invoke(s); }
+        catch { /* 订阅方异常不拖垮读线程 */ }
+    }
+
+    // 轮询路径：currState 是「最后写入值」，只在与 latch 真分歧（丢了 SetEvent）时翻转并补一帧，
+    // 因此不会每秒重发已处理的帧；Log/Info/Ready/Error/Waiting 不含活动真相，latch 不动。
+    void ReconcileOnPoll(CaptureSnapshot s)
+    {
+        if (s.State == IpcProtocol.StatusStop && _cameraActive)
+        {
+            _cameraActive = false;
+            EmitReconciled(s, "(补偿) 检测到 currState=stop，修正遗漏的关闭");
+        }
+        else if ((s.State == IpcProtocol.StatusStart || s.State == IpcProtocol.StatusWatching) && !_cameraActive)
+        {
+            _cameraActive = true;
+            EmitReconciled(s, "(补偿) 检测到 currState=active，修正遗漏的开启");
+        }
+    }
+
+    void EmitReconciled(CaptureSnapshot s, string message)
+    {
+        try { StateReceived?.Invoke(s with { Message = message }); }
+        catch { }
     }
 
     CaptureSnapshot? TryReadSnapshot()
@@ -110,7 +198,9 @@ public sealed class SharedMemoryBridge : IDisposable
             string msg = DecodeWide(buf);
             int state = _view.ReadInt32(IpcProtocol.OffCurrState);
             int err = _view.ReadInt32(IpcProtocol.OffPotError);
-            return new CaptureSnapshot(state, err, msg);
+            uint hb = _view.ReadUInt32(IpcProtocol.OffHeartbeat);
+            uint cc = _view.ReadUInt32(IpcProtocol.OffCaptureCount);
+            return new CaptureSnapshot(state, err, msg, hb, cc);
         }
         finally
         {
@@ -150,6 +240,19 @@ public sealed class SharedMemoryBridge : IDisposable
             _view!.Write(IpcProtocol.OffCurrState, state);
         });
         _dataEvent?.Set();
+    }
+
+    /// <summary>
+    /// 目标进程消失但 hook 未发 stop 导致 latch 卡在 true 时，由编排器强制置回并补一帧 stop。
+    /// 仅在当前为 true 时动作，避免重复分发。
+    /// </summary>
+    public void ForceInactive(string reason)
+    {
+        if (!_cameraActive) return;
+        _cameraActive = false;
+        var snap = new CaptureSnapshot(IpcProtocol.StatusStop, 0, "(补偿) " + reason);
+        try { StateReceived?.Invoke(snap); }
+        catch { }
     }
 
     void WriteUnderMutex(Action write)

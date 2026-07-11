@@ -14,6 +14,11 @@
 		</PackageReference>
 	</ItemGroup>
 
+	<!-- 冒烟测试需访问 internal（如 CameraUsageProbe 的可测种子），不因此扩大公共 API 面。 -->
+	<ItemGroup>
+		<InternalsVisibleTo Include="PrivacyIsland.SmokeTest" />
+	</ItemGroup>
+
 	<ItemGroup>
 		<None Update="manifest.yml">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

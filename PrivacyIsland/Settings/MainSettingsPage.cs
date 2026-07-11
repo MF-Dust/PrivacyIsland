@@ -21,6 +21,7 @@ public class MainSettingsPage : SettingsPageBase
     readonly NumericUpDown _numMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly NumericUpDown _numMax = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly ToggleSwitch _swStealth = new();
+    readonly ToggleSwitch _swFuseOsProbe = new();
 
     // 课程联动
     readonly ToggleSwitch _swLessonAware = new();
@@ -43,6 +44,7 @@ public class MainSettingsPage : SettingsPageBase
     bool _loading;
     bool _configDirty;
     bool _stateSubscribed;
+    DispatcherTimer? _diagTimer;   // 页面打开时被动刷新诊断，零 DLL 帧时也保持鲜活
 
     public MainSettingsPage()
     {
@@ -92,8 +94,9 @@ public class MainSettingsPage : SettingsPageBase
         var minItem = Item(Icons.TimerFilled, "最小延迟（秒）", "摄像头捕获开始后的最短随机等待时间", _numMin);
         var maxItem = Item(Icons.TimerFilled, "最大延迟（秒）", "摄像头捕获开始后的最长随机等待时间", _numMax);
         var stealthItem = Item(Icons.EyeOffFilled, "隐身模式", "降低 hook 日志输出，减少被检测的风险", _swStealth);
+        var fuseItem = Item(Icons.EyeFilled, "融合系统摄像头探测", "hook 未上报但系统显示摄像头在用时，也判定为活动并触发提醒/规则（默认开，误报多可关）", _swFuseOsProbe);
 
-        return Expander(Icons.TimerFilled, "捕获延迟", "控制摄像头捕获开始前的随机等待时间", minItem, maxItem, stealthItem);
+        return Expander(Icons.TimerFilled, "捕获延迟", "控制摄像头捕获开始前的随机等待时间", minItem, maxItem, stealthItem, fuseItem);
     }
 
     SettingsExpander LessonSection()
@@ -241,6 +244,7 @@ public class MainSettingsPage : SettingsPageBase
         _numMin.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _numMax.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _swStealth.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swFuseOsProbe.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
 
         _swLessonAware.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swPauseInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
@@ -273,6 +277,7 @@ public class MainSettingsPage : SettingsPageBase
         _numMin.Value = _cfg.MinDelaySeconds;
         _numMax.Value = _cfg.MaxDelaySeconds;
         _swStealth.IsChecked = _cfg.StealthMode;
+        _swFuseOsProbe.IsChecked = _cfg.FuseOsProbe;
         _swLessonAware.IsChecked = _cfg.LessonAwareEnabled;
         _swPauseInClass.IsChecked = _cfg.PauseDuringClass;
         _swStrongDelayInClass.IsChecked = _cfg.StrongerDelayDuringClass;
@@ -284,7 +289,7 @@ public class MainSettingsPage : SettingsPageBase
         RefreshDiagnostics();
         RefreshStats();
 
-        var isAdmin = PrivacyIslandRuntime.Monitor?.Diagnostics()?.Contains("以管理员运行: 是") == true;
+        var isAdmin = PrivacyIslandRuntime.IsAdministrator;
         _infoBar.Message = isAdmin
             ? "以管理员身份运行，跨进程注入功能正常。"
             : "未以管理员身份运行，跨进程注入可能失败。请右键以管理员运行 ClassIsland。";
@@ -300,6 +305,15 @@ public class MainSettingsPage : SettingsPageBase
             PrivacyIslandRuntime.StateReceived += OnRuntimeState;
             _stateSubscribed = true;
         }
+
+        // OS 探测/心跳/融合态多来自后台轮询而非 DLL 帧，靠事件刷新会漏；页面打开时定时刷新。
+        // Tick 只在创建时订阅一次，避免重复 OnLoaded 叠加处理器。
+        if (_diagTimer is null)
+        {
+            _diagTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            _diagTimer.Tick += OnDiagTimerTick;
+        }
+        _diagTimer.Start();
     }
 
     protected override void OnUnloaded(RoutedEventArgs e)
@@ -311,8 +325,12 @@ public class MainSettingsPage : SettingsPageBase
             _stateSubscribed = false;
         }
 
+        _diagTimer?.Stop();
+
         base.OnUnloaded(e);
     }
+
+    void OnDiagTimerTick(object? sender, EventArgs e) => RefreshDiagnostics();
 
     void SaveConfig()
     {
@@ -331,6 +349,7 @@ public class MainSettingsPage : SettingsPageBase
         _cfg.MinDelaySeconds = min;
         _cfg.MaxDelaySeconds = max;
         _cfg.StealthMode = _swStealth.IsChecked == true;
+        _cfg.FuseOsProbe = _swFuseOsProbe.IsChecked == true;
 
         int classMin = (int)(_numClassMin.Value ?? 10);
         int classMax = (int)(_numClassMax.Value ?? 20);

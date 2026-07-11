@@ -27,6 +27,10 @@ public sealed class PluginConfig
     public string ColorOnWatching { get; set; } = "#FFA500";
     public string ColorOnStop { get; set; } = "#FF69B4";
 
+    // 融合 OS 摄像头占用探测（ConsentStore）：hook 沉默但系统显示摄像头在用时，
+    // 也判定为「有效活动」并照常触发通知/规则/触发器。默认开（用户明确要更强检测）；噪声大可关。
+    public bool FuseOsProbe { get; set; } = true;
+
     // 课程感知联动（接 ILessonsService）。默认全关，保持现有行为。
     public bool LessonAwareEnabled { get; set; } = false;        // 总开关
     public bool PauseDuringClass { get; set; } = false;          // 上课时自动暂停防护
