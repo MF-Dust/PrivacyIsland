@@ -15,7 +15,7 @@ using PrivacyIsland.Orchestrator;
 
 namespace PrivacyIsland.Settings;
 
-[SettingsPageInfo("privacy.island.settings", "摄像头防护", "", "", ClassIsland.Core.Enums.SettingsWindow.SettingsPageCategory.External)]
+[SettingsPageInfo("privacy.island.settings", "摄像头防护", Icons.CameraRegular, Icons.CameraFilled, ClassIsland.Core.Enums.SettingsWindow.SettingsPageCategory.External)]
 public class MainSettingsPage : SettingsPageBase
 {
     readonly NumericUpDown _numMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };

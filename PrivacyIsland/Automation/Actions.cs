@@ -6,7 +6,7 @@ using PrivacyIsland.Logging;
 namespace PrivacyIsland.Automation;
 
 /// <summary>暂停防护（可逆）：invoke 暂停摄像头延迟，规则不再满足时 revert 自动恢复。</summary>
-[ActionInfo("privacy.island.action.pause", "暂停摄像头防护", "")]
+[ActionInfo("privacy.island.action.pause", "暂停摄像头防护", Icons.PauseFilled)]
 public class PauseProtectionAction : ActionBase<EmptyConfig>
 {
     protected override async Task OnInvoke()
@@ -23,7 +23,7 @@ public class PauseProtectionAction : ActionBase<EmptyConfig>
 }
 
 /// <summary>清除 automation 暂停源，恢复摄像头延迟防护。</summary>
-[ActionInfo("privacy.island.action.resume", "恢复摄像头防护", "")]
+[ActionInfo("privacy.island.action.resume", "恢复摄像头防护", Icons.PlayFilled)]
 public class ResumeProtectionAction : ActionBase<EmptyConfig>
 {
     protected override async Task OnInvoke()
@@ -35,7 +35,7 @@ public class ResumeProtectionAction : ActionBase<EmptyConfig>
 }
 
 /// <summary>立即向 media_capture.exe 注入防护 DLL。</summary>
-[ActionInfo("privacy.island.action.injectNow", "立即注入防护", "")]
+[ActionInfo("privacy.island.action.injectNow", "立即注入防护", Icons.PlugConnectedFilled)]
 public class InjectNowAction : ActionBase<EmptyConfig>
 {
     protected override async Task OnInvoke()
@@ -46,7 +46,7 @@ public class InjectNowAction : ActionBase<EmptyConfig>
 }
 
 /// <summary>立即从 media_capture.exe 弹射防护 DLL。</summary>
-[ActionInfo("privacy.island.action.ejectNow", "立即弹射防护", "")]
+[ActionInfo("privacy.island.action.ejectNow", "立即弹射防护", Icons.PlugDisconnectedFilled)]
 public class EjectNowAction : ActionBase<EmptyConfig>
 {
     protected override async Task OnInvoke()
@@ -69,7 +69,7 @@ public class DelayActionConfig : ObservableObject
 public sealed class TemporaryDelayActionConfig : DelayActionConfig { }
 
 /// <summary>把基准随机延迟设为指定上下限（持久化）。可在自动化里「上课 → 设定 10-20s」。</summary>
-[ActionInfo("privacy.island.action.setDelay", "立即设定延迟", "")]
+[ActionInfo("privacy.island.action.setDelay", "立即设定延迟", Icons.TimerFilled)]
 public class SetDelayAction : ActionBase<DelayActionConfig>
 {
     protected override async Task OnInvoke()
@@ -81,7 +81,7 @@ public class SetDelayAction : ActionBase<DelayActionConfig>
 }
 
 /// <summary>临时覆盖随机延迟，不写入 config.json。</summary>
-[ActionInfo("privacy.island.action.temporaryDelay", "临时设定延迟", "")]
+[ActionInfo("privacy.island.action.temporaryDelay", "临时设定延迟", Icons.ClockFilled)]
 public class TemporaryDelayAction : ActionBase<TemporaryDelayActionConfig>
 {
     protected override async Task OnInvoke()
@@ -100,7 +100,7 @@ public class TemporaryDelayAction : ActionBase<TemporaryDelayActionConfig>
 }
 
 /// <summary>清除临时延迟覆盖，恢复基准延迟。</summary>
-[ActionInfo("privacy.island.action.clearTemporaryDelay", "清除临时延迟", "")]
+[ActionInfo("privacy.island.action.clearTemporaryDelay", "清除临时延迟", Icons.CheckmarkCircleFilled)]
 public class ClearTemporaryDelayAction : ActionBase<EmptyConfig>
 {
     protected override async Task OnInvoke()

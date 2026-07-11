@@ -13,8 +13,8 @@ namespace PrivacyIsland.Notification;
 /// 摄像头提醒 provider（替代原生全屏覆盖层）。订阅 IPC 状态，在 start/watching/stop 时
 /// 通过 ClassIsland 提醒系统弹出通知，颜色沿用原版语义（红/橙/粉）。
 /// </summary>
-[NotificationProviderInfo("b1e7c0a2-3d4f-4a6b-9c1d-2e3f4a5b6c7d", "摄像头防护", "希沃摄像头访问提醒")]
-[NotificationChannelInfo(ChannelId, "摄像头访问", "", "摄像头开启/监视/关闭时提醒")]
+[NotificationProviderInfo("b1e7c0a2-3d4f-4a6b-9c1d-2e3f4a5b6c7d", "摄像头防护", Icons.ShieldCheckmarkFilled, "希沃摄像头访问提醒")]
+[NotificationChannelInfo(ChannelId, "摄像头访问", Icons.CameraFilled, "摄像头开启/监视/关闭时提醒")]
 public class CameraNotificationProvider : NotificationProviderBase<CameraNotificationSettings>
 {
     const string ChannelId = "c2f8d1b3-4e5a-4b7c-8d2e-3f4a5b6c7d8e";
