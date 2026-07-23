@@ -2,6 +2,7 @@ using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PrivacyIsland.Ipc;
+using PrivacyIsland.Orchestrator;
 
 namespace PrivacyIsland.Automation;
 
@@ -85,4 +86,16 @@ public class ProtectionPauseChangedTrigger : TriggerBase<ProtectionPauseTriggerC
 
     public override void Loaded() => PrivacyIslandRuntime.ProtectionPauseChanged += OnPauseChanged;
     public override void UnLoaded() => PrivacyIslandRuntime.ProtectionPauseChanged -= OnPauseChanged;
+}
+
+[TriggerInfo("privacy.island.trigger.privacyRiskDetected", "检测到隐私风险时", Icons.ShieldErrorFilled)]
+public class PrivacyRiskDetectedTrigger : TriggerBase<EmptyConfig>
+{
+    void OnRisk(PrivacyRiskSnapshot risk)
+    {
+        if (risk.Active) Trigger();
+    }
+
+    public override void Loaded() => PrivacyIslandRuntime.PrivacyRiskReceived += OnRisk;
+    public override void UnLoaded() => PrivacyIslandRuntime.PrivacyRiskReceived -= OnRisk;
 }

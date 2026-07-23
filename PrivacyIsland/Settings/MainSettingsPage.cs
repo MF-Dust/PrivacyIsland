@@ -15,13 +15,17 @@ using PrivacyIsland.Orchestrator;
 
 namespace PrivacyIsland.Settings;
 
-[SettingsPageInfo("privacy.island.settings", "摄像头防护", Icons.CameraRegular, Icons.CameraFilled, ClassIsland.Core.Enums.SettingsWindow.SettingsPageCategory.External)]
+[SettingsPageInfo("privacy.island.settings", "隐私防护", Icons.ShieldCheckmarkFilled, Icons.ShieldCheckmarkFilled, ClassIsland.Core.Enums.SettingsWindow.SettingsPageCategory.External)]
 public class MainSettingsPage : SettingsPageBase
 {
     readonly NumericUpDown _numMin = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly NumericUpDown _numMax = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly ToggleSwitch _swStealth = new();
     readonly ToggleSwitch _swFuseOsProbe = new();
+    readonly ToggleSwitch _swScreenCapture = new();
+    readonly ToggleSwitch _swRemoteControl = new();
+    readonly ToggleSwitch _swMicrophone = new();
+    readonly ComboBox _privacyResponse = new() { Width = 180 };
 
     // 课程联动
     readonly ToggleSwitch _swLessonAware = new();
@@ -54,10 +58,7 @@ public class MainSettingsPage : SettingsPageBase
 
         root.Children.Add(TitleSection());
         root.Children.Add(_infoBar);
-        root.Children.Add(DelaySection());
-        root.Children.Add(LessonSection());
-        root.Children.Add(StatsSection());
-        root.Children.Add(TestSection());
+        root.Children.Add(CategoryTabs());
 
         Content = new ScrollViewer
         {
@@ -81,22 +82,92 @@ public class MainSettingsPage : SettingsPageBase
             Margin = new Thickness(0, 4, 0, 4),
             Children =
             {
-                new FontIcon { Glyph = Icons.CameraFilled, FontSize = 28, FontFamily = new FontFamily("Segoe Fluent Icons") },
-                new Label { Content = "摄像头防护", FontSize = 20, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center }
+                new FontIcon { Glyph = Icons.ShieldCheckmarkFilled, FontSize = 28, FontFamily = new FontFamily("Segoe Fluent Icons"), VerticalAlignment = VerticalAlignment.Center },
+                new StackPanel
+                {
+                    Spacing = 2,
+                    Children =
+                    {
+                        new Label { Content = "隐私防护", FontSize = 20, FontWeight = FontWeight.SemiBold },
+                        new TextBlock { Text = "按场景管理监测、延迟和诊断功能", Opacity = 0.72 }
+                    }
+                }
             }
         };
     }
 
     // ---- section builders ----
 
+    Control CategoryTabs()
+    {
+        var tabs = new TabControl
+        {
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        tabs.Items.Add(CategoryTab(Icons.ShieldCheckmarkFilled, "防护设置",
+            PrivacySection(), DelaySection()));
+        tabs.Items.Add(CategoryTab(Icons.CalendarFilled, "课程联动",
+            LessonSection()));
+        tabs.Items.Add(CategoryTab(Icons.ScanFilled, "诊断与测试",
+            StatsSection(), DiagnosticsSection(), SimulationSection()));
+        return tabs;
+    }
+
+    static TabItem CategoryTab(string glyph, string header, params Control[] sections)
+    {
+        var content = new StackPanel { Spacing = 8, Margin = new Thickness(0, 12, 0, 4) };
+        foreach (var section in sections) content.Children.Add(section);
+        return new TabItem
+        {
+            Header = TabHeader(glyph, header),
+            Content = content,
+        };
+    }
+
+    static Control TabHeader(string glyph, string title)
+    {
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                new FontIcon { Glyph = glyph, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 16 },
+                new TextBlock { Text = title, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center }
+            }
+        };
+    }
+
+    SettingsExpander PrivacySection()
+    {
+        var cameraStatus = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Children =
+            {
+                new FontIcon { Glyph = Icons.CheckmarkCircleFilled, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 14 },
+                new TextBlock { Text = "始终启用", VerticalAlignment = VerticalAlignment.Center }
+            }
+        };
+        var camera = Item(Icons.CameraFilled, "监测摄像头访问", "通过 hook 与 Windows 占用状态确认希沃摄像头访问", cameraStatus);
+        var fuse = Item(Icons.EyeFilled, "融合系统摄像头探测", "hook 未上报但系统显示摄像头在用时，也判定为活动并触发提醒和规则", _swFuseOsProbe);
+        var screen = Item(Icons.EyeFilled, "监测屏幕采集", "检测希沃 screenCapture 组件及 Windows 现代屏幕捕获状态", _swScreenCapture);
+        var remote = Item(Icons.ShieldErrorFilled, "监测远程控制", "检测希沃 rtcRemoteDesktop 远程桌面组件", _swRemoteControl);
+        var microphone = Item(Icons.MegaphoneFilled, "监测麦克风", "检测希沃进程的 Windows 麦克风占用状态", _swMicrophone);
+        var response = Item(Icons.WarningFilled, "风险处理方式", "仅提示不会弹出确认框，也不会自动结束进程", _privacyResponse);
+        return Expander(Icons.ShieldCheckmarkFilled, "隐私风险监测", "统一管理摄像头、屏幕、远控和麦克风风险", response, camera, fuse, screen, remote, microphone);
+    }
+
     SettingsExpander DelaySection()
     {
         var minItem = Item(Icons.TimerFilled, "最小延迟（秒）", "摄像头捕获开始后的最短随机等待时间", _numMin);
         var maxItem = Item(Icons.TimerFilled, "最大延迟（秒）", "摄像头捕获开始后的最长随机等待时间", _numMax);
         var stealthItem = Item(Icons.EyeOffFilled, "隐身模式", "降低 hook 日志输出，减少被检测的风险", _swStealth);
-        var fuseItem = Item(Icons.EyeFilled, "融合系统摄像头探测", "hook 未上报但系统显示摄像头在用时，也判定为活动并触发提醒/规则（默认开，误报多可关）", _swFuseOsProbe);
 
-        return Expander(Icons.TimerFilled, "捕获延迟", "控制摄像头捕获开始前的随机等待时间", minItem, maxItem, stealthItem, fuseItem);
+        return Expander(Icons.TimerFilled, "捕获延迟", "控制摄像头捕获开始前的随机等待时间", minItem, maxItem, stealthItem);
     }
 
     SettingsExpander LessonSection()
@@ -117,13 +188,13 @@ public class MainSettingsPage : SettingsPageBase
         spStats.Children.Add(_lblStats);
 
         var spButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var btnRefresh = new Button { Content = "刷新统计" };
+        var btnRefresh = ActionButton(Icons.ScanFilled, "刷新统计");
         btnRefresh.Click += (_, _) =>
         {
             RefreshStats();
             ShowInfo("统计信息已刷新。", InfoBarSeverity.Informational);
         };
-        var btnReset = new Button { Content = "重置统计" };
+        var btnReset = ActionButton(Icons.DeleteFilled, "重置统计");
         btnReset.Click += (_, _) => ResetStats();
         spButtons.Children.Add(btnRefresh);
         spButtons.Children.Add(btnReset);
@@ -134,9 +205,27 @@ public class MainSettingsPage : SettingsPageBase
         return Expander(Icons.ChartMultipleFilled, "捕获统计", "摄像头捕获历史记录", statsItem);
     }
 
-    SettingsExpander TestSection()
+    SettingsExpander DiagnosticsSection()
     {
         var diagItem = Item(Icons.InfoFilled, "诊断信息", "当前注入器、DLL、IPC 与权限状态", _lblDiag);
+
+        var btnRefresh = ActionButton(Icons.ScanFilled, "刷新诊断");
+        btnRefresh.Click += (_, _) =>
+        {
+            RefreshDiagnostics();
+            ShowInfo("诊断信息已刷新。", InfoBarSeverity.Informational);
+        };
+        var refreshItem = Item(Icons.SettingsFilled, "刷新诊断信息", "重新检测注入器、DLL、IPC 和目标进程状态", btnRefresh);
+
+        var btnLogs = ActionButton(Icons.FolderFilled, "查看日志说明");
+        btnLogs.Click += (_, _) => ShowOperation(PrivacyIslandRuntime.OpenLogsFolder());
+        var logsItem = Item(Icons.FolderFilled, "ClassIsland 日志", "PrivacyIsland 运行日志写入 ClassIsland 宿主日志", btnLogs);
+
+        return Expander(Icons.InfoFilled, "运行状态", "查看诊断信息和宿主日志位置", diagItem, refreshItem, logsItem);
+    }
+
+    SettingsExpander SimulationSection()
+    {
 
         var spSim = new StackPanel { Spacing = 4 };
         spSim.Children.Add(SimulateButton("模拟开启", () => SimThenRefresh(Ipc.IpcProtocol.StatusStart, "模拟 DirectShow 捕获开启 [DS]")));
@@ -145,32 +234,27 @@ public class MainSettingsPage : SettingsPageBase
         spSim.Children.Add(SimulateButton("完整模拟", RunFullSimulation));
         var simItem = Item(Icons.PlayFilled, "模拟摄像头事件", "走完整 IPC 路径触发提醒/触发器/规则/统计，无需真注入", spSim);
 
+        var spPrivacySim = new StackPanel { Spacing = 4 };
+        spPrivacySim.Children.Add(SimulateButton("模拟摄像头访问", () => SimulateRisk(PrivacyRiskKind.Camera)));
+        spPrivacySim.Children.Add(SimulateButton("模拟屏幕采集", () => SimulateRisk(PrivacyRiskKind.ScreenCapture)));
+        spPrivacySim.Children.Add(SimulateButton("模拟远程控制", () => SimulateRisk(PrivacyRiskKind.RemoteControl)));
+        spPrivacySim.Children.Add(SimulateButton("模拟麦克风访问", () => SimulateRisk(PrivacyRiskKind.Microphone)));
+        var privacySimItem = Item(Icons.ShieldErrorFilled, "模拟隐私风险", "验证隐私事件、触发器和规则，不会结束任何进程", spPrivacySim);
+
         var spLesson = new StackPanel { Spacing = 4 };
         spLesson.Children.Add(SimulateButton("模拟上课", () => SimLesson(true)));
         spLesson.Children.Add(SimulateButton("模拟课间", () => SimLesson(false)));
         var lessonItem = Item(Icons.CalendarFilled, "模拟课程状态", "按当前课程联动设置应用上课/课间策略，无需等真实课表", spLesson);
 
-        var btnRefresh = new Button { Content = "刷新诊断", Margin = new Thickness(0, 4, 0, 0) };
-        btnRefresh.Click += (_, _) =>
-        {
-            RefreshDiagnostics();
-            ShowInfo("诊断信息已刷新。", InfoBarSeverity.Informational);
-        };
-        var refreshItem = Item(Icons.SettingsFilled, "刷新诊断信息", "重新检测注入器、DLL、IPC 和目标进程状态", btnRefresh);
-
-        var btnLogs = new Button { Content = "查看日志说明", Margin = new Thickness(0, 4, 0, 0) };
-        btnLogs.Click += (_, _) => ShowOperation(PrivacyIslandRuntime.OpenLogsFolder());
-        var logsItem = Item(Icons.FolderFilled, "ClassIsland 日志", "PrivacyIsland 运行日志写入 ClassIsland 宿主日志", btnLogs);
-
         var spActions = new StackPanel { Spacing = 4 };
-        var btnInject = new Button { Content = "立即注入", Margin = new Thickness(0, 2, 0, 0) };
+        var btnInject = ActionButton(Icons.PlugConnectedFilled, "立即注入");
         btnInject.Click += (_, _) =>
         {
             FlushConfig();
             ShowOperation(PrivacyIslandRuntime.InjectNow());
             RefreshDiagnostics();
         };
-        var btnEject = new Button { Content = "立即弹射", Margin = new Thickness(0, 2, 0, 0) };
+        var btnEject = ActionButton(Icons.PlugDisconnectedFilled, "立即弹射");
         btnEject.Click += (_, _) =>
         {
             FlushConfig();
@@ -181,7 +265,7 @@ public class MainSettingsPage : SettingsPageBase
         spActions.Children.Add(btnEject);
         var actionItem = Item(Icons.PlugConnectedFilled, "手动注入 / 弹射", "立即向 media_capture.exe 注入或弹射防护 DLL", spActions);
 
-        return Expander(Icons.ScanFilled, "功能测试", "诊断与应用内模拟，无需真实注入即可验证", diagItem, simItem, lessonItem, refreshItem, logsItem, actionItem);
+        return Expander(Icons.PlayFilled, "应用内模拟与操作", "无需真实注入即可验证事件和执行维护操作", simItem, privacySimItem, lessonItem, actionItem);
     }
 
     void SimLesson(bool inClass)
@@ -229,14 +313,28 @@ public class MainSettingsPage : SettingsPageBase
 
     Button SimulateButton(string text, Action onClick)
     {
-        var btn = new Button
+        var btn = ActionButton(Icons.PlayFilled, text);
+        btn.Click += (_, _) => onClick();
+        return btn;
+    }
+
+    static Button ActionButton(string glyph, string text)
+    {
+        return new Button
         {
-            Content = text,
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
+                {
+                    new FontIcon { Glyph = glyph, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 14 },
+                    new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center }
+                }
+            },
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 2, 0, 0),
         };
-        btn.Click += (_, _) => onClick();
-        return btn;
     }
 
     void WireAutosave()
@@ -245,6 +343,12 @@ public class MainSettingsPage : SettingsPageBase
         _numMax.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == NumericUpDown.ValueProperty);
         _swStealth.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swFuseOsProbe.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swScreenCapture.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swRemoteControl.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swMicrophone.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
+        _privacyResponse.Items.Add("询问后处理");
+        _privacyResponse.Items.Add("仅提示");
+        _privacyResponse.SelectionChanged += (_, _) => MarkConfigDirty(true);
 
         _swLessonAware.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
         _swPauseInClass.PropertyChanged += (_, e) => MarkConfigDirty(e.Property == ToggleSwitch.IsCheckedProperty);
@@ -278,6 +382,10 @@ public class MainSettingsPage : SettingsPageBase
         _numMax.Value = _cfg.MaxDelaySeconds;
         _swStealth.IsChecked = _cfg.StealthMode;
         _swFuseOsProbe.IsChecked = _cfg.FuseOsProbe;
+        _swScreenCapture.IsChecked = _cfg.EnableScreenCaptureMonitoring;
+        _swRemoteControl.IsChecked = _cfg.EnableRemoteControlMonitoring;
+        _swMicrophone.IsChecked = _cfg.EnableMicrophoneMonitoring;
+        _privacyResponse.SelectedIndex = _cfg.PrivacyRiskResponse == PrivacyRiskResponseMode.NotifyOnly ? 1 : 0;
         _swLessonAware.IsChecked = _cfg.LessonAwareEnabled;
         _swPauseInClass.IsChecked = _cfg.PauseDuringClass;
         _swStrongDelayInClass.IsChecked = _cfg.StrongerDelayDuringClass;
@@ -303,6 +411,7 @@ public class MainSettingsPage : SettingsPageBase
         if (!_stateSubscribed)
         {
             PrivacyIslandRuntime.StateReceived += OnRuntimeState;
+            PrivacyIslandRuntime.PrivacyRiskReceived += OnPrivacyRisk;
             _stateSubscribed = true;
         }
 
@@ -322,6 +431,7 @@ public class MainSettingsPage : SettingsPageBase
         if (_stateSubscribed)
         {
             PrivacyIslandRuntime.StateReceived -= OnRuntimeState;
+            PrivacyIslandRuntime.PrivacyRiskReceived -= OnPrivacyRisk;
             _stateSubscribed = false;
         }
 
@@ -350,6 +460,12 @@ public class MainSettingsPage : SettingsPageBase
         _cfg.MaxDelaySeconds = max;
         _cfg.StealthMode = _swStealth.IsChecked == true;
         _cfg.FuseOsProbe = _swFuseOsProbe.IsChecked == true;
+        _cfg.EnableScreenCaptureMonitoring = _swScreenCapture.IsChecked == true;
+        _cfg.EnableRemoteControlMonitoring = _swRemoteControl.IsChecked == true;
+        _cfg.EnableMicrophoneMonitoring = _swMicrophone.IsChecked == true;
+        _cfg.PrivacyRiskResponse = _privacyResponse.SelectedIndex == 1
+            ? PrivacyRiskResponseMode.NotifyOnly
+            : PrivacyRiskResponseMode.Prompt;
 
         int classMin = (int)(_numClassMin.Value ?? 10);
         int classMax = (int)(_numClassMax.Value ?? 20);
@@ -397,6 +513,14 @@ public class MainSettingsPage : SettingsPageBase
         ShowInfo("已触发模拟摄像头事件。", InfoBarSeverity.Success);
     }
 
+    void SimulateRisk(PrivacyRiskKind kind)
+    {
+        FlushConfig();
+        PrivacyIslandRuntime.SimulatePrivacyRisk(kind);
+        RefreshDiagnostics();
+        ShowInfo("已触发模拟隐私风险。", InfoBarSeverity.Success);
+    }
+
     async void RunFullSimulation()
     {
         FlushConfig();
@@ -433,6 +557,8 @@ public class MainSettingsPage : SettingsPageBase
             RefreshDiagnostics();
         });
     }
+
+    void OnPrivacyRisk(PrivacyRiskSnapshot _) => Dispatcher.UIThread.Post(RefreshDiagnostics);
 
     void ShowOperation(PluginOperationResult result)
     {

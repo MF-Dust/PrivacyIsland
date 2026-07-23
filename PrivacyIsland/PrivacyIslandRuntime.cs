@@ -18,6 +18,9 @@ public static class PrivacyIslandRuntime
     /// <summary>防护暂停状态变化——自动化触发器订阅此事件。</summary>
     public static event Action<bool>? ProtectionPauseChanged;
 
+    /// <summary>摄像头、屏幕采集、远程控制和麦克风风险状态变化。</summary>
+    public static event Action<PrivacyRiskSnapshot>? PrivacyRiskReceived;
+
     internal static void RaiseState(CaptureSnapshot s)
     {
         try { StateReceived?.Invoke(s); } catch { /* 订阅方异常隔离 */ }
@@ -28,6 +31,11 @@ public static class PrivacyIslandRuntime
         try { ProtectionPauseChanged?.Invoke(paused); } catch { /* 订阅方异常隔离 */ }
     }
 
+    internal static void RaisePrivacyRisk(PrivacyRiskSnapshot risk)
+    {
+        try { PrivacyRiskReceived?.Invoke(risk); } catch { /* 订阅方异常隔离 */ }
+    }
+
     /// <summary>摄像头当前是否正被访问（融合 hook 与 OS 探测），供规则读取。</summary>
     public static bool CameraActive => Monitor?.EffectiveCameraActive ?? false;
 
@@ -36,6 +44,12 @@ public static class PrivacyIslandRuntime
 
     /// <summary>防护当前是否处于暂停态（任一暂停来源生效），供规则读取。</summary>
     public static bool IsPaused => Monitor?.EffectivePaused ?? false;
+
+    public static bool ScreenCaptureActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.ScreenCapture) ?? false;
+    public static bool RemoteControlActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.RemoteControl) ?? false;
+    public static bool MicrophoneActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.Microphone) ?? false;
+    public static bool CameraPrivacyActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.Camera) ?? false;
+    public static bool AnyPrivacyRiskActive => CameraPrivacyActive || ScreenCaptureActive || RemoteControlActive || MicrophoneActive;
 
     public static PluginConfig? Config => Monitor?.Config;
 
@@ -55,10 +69,13 @@ public static class PrivacyIslandRuntime
         => Monitor?.InjectNow() ?? PluginOperationResult.Fail("编排器未就绪，无法注入");
     public static PluginOperationResult EjectNow()
         => Monitor?.EjectNow() ?? PluginOperationResult.Fail("编排器未就绪，无法弹射");
+    public static PluginOperationResult TerminatePrivacyRisk(PrivacyRiskSnapshot risk)
+        => Monitor?.TerminatePrivacyRisk(risk) ?? PluginOperationResult.Fail("编排器未就绪，无法结束风险进程");
     public static PluginOperationResult OpenLogsFolder()
         => Monitor?.OpenLogsFolder() ?? PluginOperationResult.Fail("编排器未就绪，无法查看日志状态");
 
     // 应用内功能测试
     public static void Simulate(int state, string message) => Monitor?.Simulate(state, message);
+    public static void SimulatePrivacyRisk(PrivacyRiskKind kind) => Monitor?.SimulatePrivacyRisk(kind);
     public static string Diagnostics() => Monitor?.Diagnostics() ?? "（编排器未就绪）";
 }

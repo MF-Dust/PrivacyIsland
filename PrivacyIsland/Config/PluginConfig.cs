@@ -3,6 +3,12 @@ using System.Text.Json;
 
 namespace PrivacyIsland.Config;
 
+public enum PrivacyRiskResponseMode
+{
+    Prompt,
+    NotifyOnly,
+}
+
 /// <summary>插件配置，持久化到 PluginConfigFolder/config.json。</summary>
 public sealed class PluginConfig
 {
@@ -30,6 +36,12 @@ public sealed class PluginConfig
     // 融合 OS 摄像头占用探测（ConsentStore）：hook 沉默但系统显示摄像头在用时，
     // 也判定为「有效活动」并照常触发通知/规则/触发器。默认开（用户明确要更强检测）；噪声大可关。
     public bool FuseOsProbe { get; set; } = true;
+
+    // 希沃屏幕采集、远程控制和麦克风风险监测。只记录进程/系统占用，不读取内容。
+    public bool EnableScreenCaptureMonitoring { get; set; } = true;
+    public bool EnableRemoteControlMonitoring { get; set; } = true;
+    public bool EnableMicrophoneMonitoring { get; set; } = true;
+    public PrivacyRiskResponseMode PrivacyRiskResponse { get; set; } = PrivacyRiskResponseMode.Prompt;
 
     // 课程感知联动（接 ILessonsService）。默认全关，保持现有行为。
     public bool LessonAwareEnabled { get; set; } = false;        // 总开关
@@ -90,6 +102,8 @@ public sealed class PluginConfig
         if (ClassMaxDelaySeconds < 1) ClassMaxDelaySeconds = 1;
         if (ClassMaxDelaySeconds > 30) ClassMaxDelaySeconds = 30;
         if (ClassMaxDelaySeconds < ClassMinDelaySeconds) ClassMaxDelaySeconds = ClassMinDelaySeconds;
+
+        if (!Enum.IsDefined(PrivacyRiskResponse)) PrivacyRiskResponse = PrivacyRiskResponseMode.Prompt;
 
         // 文案截断，防止溢出 overlay。
         TextOnStart = Truncate(TextOnStart);

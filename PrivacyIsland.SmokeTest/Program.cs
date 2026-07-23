@@ -34,6 +34,21 @@ if (args.Length > 0 && args[0] == "live")
     RunLive();
     return;
 }
+if (args.Length > 0 && args[0] == "privacy")
+{
+    RunPrivacyChecks();
+    Console.WriteLine("PRIVACY PASS");
+    return;
+}
+if (args.Length > 1 && args[0] == "signature")
+{
+    foreach (string path in args.Skip(1))
+        Assert(PrivacyIsland.Native.SeewoSignatureVerifier.IsSignedBySeewo(path), $"希沃数字签名有效: {path}");
+    Assert(!PrivacyIsland.Native.SeewoSignatureVerifier.IsSignedBySeewo(typeof(Program).Assembly.Location),
+        "未签名的冒烟测试程序集被拒绝");
+    Console.WriteLine("SIGNATURE PASS");
+    return;
+}
 
 // ---------- IPC round-trip ----------
 using (var bridge = new SharedMemoryBridge())
@@ -126,24 +141,78 @@ using (var bridge = new SharedMemoryBridge())
     Assert(!bridge.CameraActive, "reconcile 后 CameraActive == false");
 }
 
-// 7) OS 探测：用假种子验证判据/匹配，无需真摄像头或注册表。
-{
-    const string path = @"C:\x\media_capture.exe";
-    var inUse = new PrivacyIsland.Native.CameraUsageProbe(
-        () => new[] { new PrivacyIsland.Native.CameraUsageProbe.WebcamUsage(path, 1, 0, false) });
-    Assert(inUse.IsWebcamInUseBy(path), "OS 探测：Stop==0 且 Start!=0 判为在用");
-    Assert(inUse.IsWebcamInUseBy(path.ToUpperInvariant()), "OS 探测：路径大小写不敏感");
-    Assert(!inUse.IsWebcamInUseBy(@"C:\other.exe"), "OS 探测：其他路径不误报");
-    Assert(inUse.InUseApps().Contains(path), "OS 探测：InUseApps 含在用路径");
-
-    var notInUse = new PrivacyIsland.Native.CameraUsageProbe(
-        () => new[] { new PrivacyIsland.Native.CameraUsageProbe.WebcamUsage(path, 1, 5, false) });
-    Assert(!notInUse.IsWebcamInUseBy(path), "OS 探测：Stop!=0 判为未在用");
-    Assert(notInUse.InUseApps().Count == 0, "OS 探测：无在用应用时 InUseApps 为空");
-}
+RunPrivacyChecks();
 
 Console.WriteLine("PASS");
 return;
+
+void RunPrivacyChecks()
+{
+    const string path = @"C:\x\media_capture.exe";
+    var inUse = new PrivacyIsland.Native.CapabilityUsageProbe("webcam",
+        () => new[] { new PrivacyIsland.Native.CapabilityUsageProbe.CapabilityUsage(path, 1, 0, false) });
+    Assert(inUse.IsInUseBy(path), "OS 探测：Stop==0 且 Start!=0 判为在用");
+    Assert(inUse.IsInUseBy(path.ToUpperInvariant()), "OS 探测：路径大小写不敏感");
+    Assert(!inUse.IsInUseBy(@"C:\other.exe"), "OS 探测：其他路径不误报");
+    Assert(inUse.InUseApps().Contains(path), "OS 探测：InUseApps 含在用路径");
+
+    var notInUse = new PrivacyIsland.Native.CapabilityUsageProbe("microphone",
+        () => new[] { new PrivacyIsland.Native.CapabilityUsageProbe.CapabilityUsage(path, 1, 5, false) });
+    Assert(!notInUse.IsInUseBy(path), "OS 探测：Stop!=0 判为未在用");
+    Assert(notInUse.InUseApps().Count == 0, "OS 探测：无在用应用时 InUseApps 为空");
+
+    const string product = "希沃管家";
+    var config = new PrivacyIsland.Config.PluginConfig();
+    Assert(config.PrivacyRiskResponse == PrivacyIsland.Config.PrivacyRiskResponseMode.Prompt,
+        "隐私风险默认询问后处理");
+    config.PrivacyRiskResponse = PrivacyIsland.Config.PrivacyRiskResponseMode.NotifyOnly;
+    config.Clamp();
+    Assert(config.PrivacyRiskResponse == PrivacyIsland.Config.PrivacyRiskResponseMode.NotifyOnly,
+        "隐私风险可切换为仅提示");
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.ShouldPromptPrivacyRisk(
+        config.PrivacyRiskResponse, true, true, 123),
+        "仅提示模式不排队确认框");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.ShouldPromptPrivacyRisk(
+        PrivacyIsland.Config.PrivacyRiskResponseMode.Prompt, true, true, 123),
+        "询问模式为有效风险排队确认框");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.ShouldTrackCameraPrivacyRisk(true, true),
+        "摄像头活动且目标可信时纳入隐私风险");
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.ShouldTrackCameraPrivacyRisk(true, false),
+        "摄像头目标未通过校验时不纳入隐私风险");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.Camera, "media_capture", product, "media_capture.exe", true),
+        "隐私目标：接受有效签名的 media_capture 摄像头组件");
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.Camera, "media_capture", product, "wrong.exe", true),
+        "隐私目标：拒绝原始文件名错误的摄像头组件");
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.Camera, "media_capture", product, "media_capture.exe", false),
+        "隐私目标：拒绝未签名的摄像头组件");
+    Assert(!PrivacyIsland.Notification.CameraNotificationProvider.ShouldShowGenericPrivacyNotification(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.Camera, true, true),
+        "摄像头不重复显示通用隐私通知");
+    Assert(PrivacyIsland.Notification.CameraNotificationProvider.ShouldShowGenericPrivacyNotification(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.ScreenCapture, true, true),
+        "其他隐私风险继续显示通用通知");
+    var risk = new PrivacyIsland.Orchestrator.PrivacyRiskSnapshot(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.ScreenCapture,
+        true, 123, null, "screenCapture", path, "测试");
+    Assert(PrivacyIsland.Notification.CameraNotificationProvider.FormatPrivacyRiskText(
+        "{风险类型}|{进程名}|{PID}", risk) == "屏幕采集|screenCapture.exe|123",
+        "隐私提醒模板替换风险类型、进程名和 PID");
+    Assert(PrivacyIsland.Notification.CameraNotificationProvider.FormatPrivacyRiskText("", risk) ==
+        "检测到 屏幕采集\nscreenCapture.exe (PID 123) 正在访问相关隐私能力",
+        "空隐私提醒模板回退默认文案");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.ScreenCapture, "screenCapture", product, "screenCapture.exe", true),
+        "隐私目标：接受有效签名的 screenCapture");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.RemoteControl, "rtcRemoteDesktop", product, "rtcRemoteDesktop.exe", true),
+        "隐私目标：接受有效签名的远控组件");
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.IsExpectedPrivacyTarget(
+        PrivacyIsland.Orchestrator.PrivacyRiskKind.ScreenCapture, "screenCapture", product, "screenCapture.exe", false),
+        "隐私目标：拒绝未签名的同名组件");
+}
 
 // ---------- live inject ----------
 void RunLive()

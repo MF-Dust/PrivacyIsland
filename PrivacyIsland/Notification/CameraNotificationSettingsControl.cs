@@ -14,11 +14,20 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
     readonly ToggleSwitch _swStart = new();
     readonly ToggleSwitch _swWatching = new();
     readonly ToggleSwitch _swStop = new();
+    readonly ToggleSwitch _swPrivacyRisk = new();
     readonly ToggleSwitch _swSpeech = new();
     readonly NumericUpDown _numDuration = new() { Minimum = 1, Maximum = 30, Increment = 1, Width = 120 };
     readonly TextBox _txtStart = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
     readonly TextBox _txtWatching = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
     readonly TextBox _txtStop = new() { Width = 180, MaxLength = PluginConfig.MaxTextLength };
+    readonly TextBox _txtPrivacyRisk = new()
+    {
+        Width = 280,
+        MinHeight = 64,
+        MaxLength = CameraNotificationSettings.MaxPrivacyRiskTextLength,
+        AcceptsReturn = true,
+        TextWrapping = TextWrapping.Wrap,
+    };
     readonly TextBox _txtColorStart = new() { Width = 110 };
     readonly TextBox _txtColorWatching = new() { Width = 110 };
     readonly TextBox _txtColorStop = new() { Width = 110 };
@@ -30,6 +39,7 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
 
     public CameraNotificationSettingsControl()
     {
+        ToolTip.SetTip(_txtPrivacyRisk, "支持 {风险类型}、{进程名}、{PID}");
         Content = new StackPanel
         {
             Spacing = 8,
@@ -38,11 +48,13 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
                 Row("摄像头启动时提醒", _swStart),
                 Row("进入监视时提醒", _swWatching),
                 Row("摄像头关闭时提醒", _swStop),
+                Row("隐私风险出现时提醒", _swPrivacyRisk),
                 Row("语音播报", _swSpeech),
                 Row("通知显示时长（秒）", _numDuration),
                 Row("启动提醒文案", _txtStart),
                 Row("监视提醒文案", _txtWatching),
                 Row("关闭提醒文案", _txtStop),
+                Row("隐私风险提醒模板", _txtPrivacyRisk),
                 Row("启动提醒颜色", ColorFooter(_txtColorStart, _swatchStart)),
                 Row("监视提醒颜色", ColorFooter(_txtColorWatching, _swatchWatching)),
                 Row("关闭提醒颜色", ColorFooter(_txtColorStop, _swatchStop)),
@@ -63,12 +75,14 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
         _swStart.PropertyChanged += (_, e) => SaveIfChanged(e.Property == ToggleSwitch.IsCheckedProperty);
         _swWatching.PropertyChanged += (_, e) => SaveIfChanged(e.Property == ToggleSwitch.IsCheckedProperty);
         _swStop.PropertyChanged += (_, e) => SaveIfChanged(e.Property == ToggleSwitch.IsCheckedProperty);
+        _swPrivacyRisk.PropertyChanged += (_, e) => SaveIfChanged(e.Property == ToggleSwitch.IsCheckedProperty);
         _swSpeech.PropertyChanged += (_, e) => SaveIfChanged(e.Property == ToggleSwitch.IsCheckedProperty);
         _numDuration.PropertyChanged += (_, e) => SaveIfChanged(e.Property == NumericUpDown.ValueProperty);
 
         WireTextAutosave(_txtStart);
         WireTextAutosave(_txtWatching);
         WireTextAutosave(_txtStop);
+        WireTextAutosave(_txtPrivacyRisk);
         WireColorAutosave(_txtColorStart, _swatchStart);
         WireColorAutosave(_txtColorWatching, _swatchWatching);
         WireColorAutosave(_txtColorStop, _swatchStop);
@@ -82,11 +96,13 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
         _swStart.IsChecked = Settings.NotifyOnStart;
         _swWatching.IsChecked = Settings.NotifyOnWatching;
         _swStop.IsChecked = Settings.NotifyOnStop;
+        _swPrivacyRisk.IsChecked = Settings.NotifyOnPrivacyRisk;
         _swSpeech.IsChecked = Settings.SpeechEnabled;
         _numDuration.Value = Settings.OverlayDurationSeconds;
         _txtStart.Text = Settings.TextOnStart;
         _txtWatching.Text = Settings.TextOnWatching;
         _txtStop.Text = Settings.TextOnStop;
+        _txtPrivacyRisk.Text = Settings.PrivacyRiskTextTemplate;
         _txtColorStart.Text = Settings.ColorOnStart;
         _txtColorWatching.Text = Settings.ColorOnWatching;
         _txtColorStop.Text = Settings.ColorOnStop;
@@ -103,11 +119,13 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
         Settings.NotifyOnStart = _swStart.IsChecked == true;
         Settings.NotifyOnWatching = _swWatching.IsChecked == true;
         Settings.NotifyOnStop = _swStop.IsChecked == true;
+        Settings.NotifyOnPrivacyRisk = _swPrivacyRisk.IsChecked == true;
         Settings.SpeechEnabled = _swSpeech.IsChecked == true;
         Settings.OverlayDurationSeconds = (int)(_numDuration.Value ?? 5);
         Settings.TextOnStart = _txtStart.Text ?? "起风了";
         Settings.TextOnWatching = _txtWatching.Text ?? "风好大";
         Settings.TextOnStop = _txtStop.Text ?? "风停了";
+        Settings.PrivacyRiskTextTemplate = _txtPrivacyRisk.Text ?? CameraNotificationSettings.DefaultPrivacyRiskTextTemplate;
         Settings.ColorOnStart = string.IsNullOrWhiteSpace(_txtColorStart.Text) ? "#FF0000" : _txtColorStart.Text!.Trim();
         Settings.ColorOnWatching = string.IsNullOrWhiteSpace(_txtColorWatching.Text) ? "#FFA500" : _txtColorWatching.Text!.Trim();
         Settings.ColorOnStop = string.IsNullOrWhiteSpace(_txtColorStop.Text) ? "#FF69B4" : _txtColorStop.Text!.Trim();

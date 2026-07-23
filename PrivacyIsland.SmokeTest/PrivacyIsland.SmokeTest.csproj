@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\PrivacyIsland\PrivacyIsland.csproj" />
+    <PackageReference Include="ClassIsland.PluginSdk" Version="2.1.0" />
   </ItemGroup>
 </Project>

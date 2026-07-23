@@ -36,6 +36,7 @@ public class Plugin : PluginBase
         services.AddTrigger<CameraStoppedTrigger>();
         services.AddTrigger<CameraStateTrigger, CameraStateTriggerControl>();
         services.AddTrigger<ProtectionPauseChangedTrigger, ProtectionPauseTriggerControl>();
+        services.AddTrigger<PrivacyRiskDetectedTrigger>();
 
         // 自动化行动：暂停/恢复（可逆）、立即注入/弹射、基准/临时延迟。
         services.AddAction<PauseProtectionAction>();
@@ -51,6 +52,14 @@ public class Plugin : PluginBase
             _ => PrivacyIslandRuntime.CameraActive);
         services.AddRule("privacy.island.rule.paused", "防护已暂停", "",
             _ => PrivacyIslandRuntime.IsPaused);
+        services.AddRule("privacy.island.rule.screenCaptureActive", "希沃屏幕采集组件活动", Icons.EyeFilled,
+            _ => PrivacyIslandRuntime.ScreenCaptureActive);
+        services.AddRule("privacy.island.rule.remoteControlActive", "希沃远程控制活动", Icons.ShieldErrorFilled,
+            _ => PrivacyIslandRuntime.RemoteControlActive);
+        services.AddRule("privacy.island.rule.microphoneActive", "希沃正在使用麦克风", Icons.MegaphoneFilled,
+            _ => PrivacyIslandRuntime.MicrophoneActive);
+        services.AddRule("privacy.island.rule.anyPrivacyRiskActive", "存在隐私风险", Icons.WarningFilled,
+            _ => PrivacyIslandRuntime.AnyPrivacyRiskActive);
 
         // 设置页：延迟/隐身/统计/日志。提醒选项由通知提供方设置页承载。
         services.AddSettingsPage<MainSettingsPage>();

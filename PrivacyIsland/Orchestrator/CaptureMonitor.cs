@@ -3,6 +3,9 @@ using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using FluentAvalonia.UI.Controls;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PrivacyIsland.Config;
@@ -43,7 +46,9 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     bool _awaitingDelay;      // 收到 start 后，等首条 "Delay N s" 以统计本次延迟
 
     // OS 独立探测 + 融合/自愈状态（除标注外仅 timer 线程访问）。
-    readonly CameraUsageProbe _probe = new();
+    readonly CapabilityUsageProbe _cameraProbe = new("webcam");
+    readonly CapabilityUsageProbe _microphoneProbe = new("microphone");
+    readonly CapabilityUsageProbe _screenProbe = new("graphicsCaptureWithoutBorder");
     volatile bool _osCameraInUse;    // media_capture 的 OS 探测结果（timer 写，诊断读）
     volatile bool _fusedActive;      // 融合后的有效活动态（timer 写，规则/诊断读）
     bool _syntheticActive;           // 是否已补发过合成 start（避免重复）
@@ -51,6 +56,15 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     int _healthPid;                  // 当前健康跟踪的 pid
     int _reinjectBudget;             // 该 pid 剩余自愈重注入预算
     bool _loggedTargetPid;           // 发现/消失日志去抖
+
+    // 希沃隐私风险：timer 线程维护状态，UI/规则线程读取；确认框按 PID 去重并串行显示。
+    readonly object _privacyGate = new();
+    readonly Dictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> _privacyRisks = new();
+    readonly HashSet<(int Pid, DateTime? StartTimeUtc)> _promptedPrivacyProcesses = new();
+    readonly Queue<PrivacyRiskSnapshot> _privacyPromptQueue = new();
+    bool _privacyPromptShowing;
+    string _privacyScanNote = "无";
+    string _lastPrivacyOperation = "尚无";
 
     // 分层暂停：多个来源（manual/automation/lesson）可各自请求暂停，任一生效即暂停。
     readonly object _pauseGate = new();
@@ -113,9 +127,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         var target = FindTargetProcess();
 
         // 每拍都跑 OS 探测 + 融合——即使已注入的 pid 也要跑，「已开却没测到」正是发生在这里。
-        bool osInUse = target?.ExecutablePath is string p && p.Length > 0 && _probe.IsWebcamInUseBy(p);
+        bool osInUse = target?.ExecutablePath is string p && p.Length > 0 && _cameraProbe.IsInUseBy(p);
         _osCameraInUse = osInUse;
         UpdateFusion(target, osInUse);
+        PollPrivacyRisks(target, osInUse);
 
         if (target is null)
         {
@@ -140,6 +155,307 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         var result = Inject(target);
         if (result.Success) { _lastInjectedPid = target.Pid; _injectedUtc = DateTime.UtcNow; }
     }
+
+    void PollPrivacyRisks(TargetProcessInfo? cameraTarget, bool cameraOsInUse)
+    {
+        var current = new Dictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot>();
+        var notes = new List<string>();
+
+        bool cameraTargetValid = cameraTarget is not null && IsExpectedPrivacyTarget(
+            PrivacyRiskKind.Camera,
+            cameraTarget.ProcessName,
+            cameraTarget.Product,
+            cameraTarget.OriginalFilename,
+            cameraTarget.IsSignedBySeewo);
+        if (ShouldTrackCameraPrivacyRisk(_fusedActive, cameraTargetValid))
+        {
+            bool hookActive = Bridge?.CameraActive == true;
+            string evidence = hookActive && cameraOsInUse
+                ? "hook 与 Windows 均检测到摄像头正在使用"
+                : hookActive
+                    ? "hook 检测到摄像头正在使用"
+                    : "Windows 检测到摄像头正在使用";
+            var risk = ToPrivacyRisk(PrivacyRiskKind.Camera, cameraTarget!, evidence);
+            current[(risk.Kind, risk.ProcessId, risk.ProcessStartTimeUtc)] = risk;
+        }
+
+        if (Config.EnableScreenCaptureMonitoring)
+        {
+            AddProcessRisks(current, notes, PrivacyRiskKind.ScreenCapture, "screenCapture",
+                "希沃屏幕采集组件已启动（进程信号，不代表已确认每次截图）");
+            AddCapabilityRisks(current, PrivacyRiskKind.ScreenCapture, _screenProbe,
+                "Windows 检测到无边框屏幕捕获正在使用");
+        }
+        if (Config.EnableRemoteControlMonitoring)
+        {
+            AddProcessRisks(current, notes, PrivacyRiskKind.RemoteControl, "rtcRemoteDesktop",
+                "希沃远程桌面组件已启动");
+        }
+        if (Config.EnableMicrophoneMonitoring)
+        {
+            AddCapabilityRisks(current, PrivacyRiskKind.Microphone, _microphoneProbe,
+                "Windows 检测到麦克风正在使用");
+        }
+
+        List<PrivacyRiskSnapshot> changed = new();
+        lock (_privacyGate)
+        {
+            foreach (var (key, risk) in current)
+            {
+                if (!_privacyRisks.ContainsKey(key)) changed.Add(risk);
+                _privacyRisks[key] = risk;
+            }
+
+            foreach (var (key, old) in _privacyRisks.ToArray())
+            {
+                if (current.ContainsKey(key)) continue;
+                _privacyRisks.Remove(key);
+                changed.Add(old with { Active = false, Evidence = old.Evidence + "；状态已结束" });
+            }
+
+            var activeProcesses = current.Keys
+                .Where(key => key.Pid > 0)
+                .Select(key => (key.Pid, key.StartTimeUtc))
+                .ToHashSet();
+            _promptedPrivacyProcesses.RemoveWhere(identity => !activeProcesses.Contains(identity));
+        }
+
+        _privacyScanNote = notes.Count == 0 ? "无" : string.Join("; ", notes);
+        foreach (var risk in changed) PublishPrivacyRisk(risk, prompt: true);
+    }
+
+    internal static bool ShouldTrackCameraPrivacyRisk(bool fusedActive, bool targetVerified)
+        => fusedActive && targetVerified;
+
+    void AddProcessRisks(
+        IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
+        ICollection<string> notes,
+        PrivacyRiskKind kind,
+        string processName,
+        string evidence)
+    {
+        var processes = Process.GetProcessesByName(processName);
+        try
+        {
+            foreach (var process in processes)
+            {
+                TargetProcessInfo info;
+                try { info = TargetProcessInfo.FromProcess(process); }
+                catch
+                {
+                    notes.Add($"{processName}.exe(pid={process.Id}) 无法读取元数据");
+                    continue;
+                }
+
+                if (!IsExpectedPrivacyTarget(kind, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
+                {
+                    notes.Add($"{processName}.exe(pid={process.Id}) 未通过希沃数字签名/产品校验");
+                    continue;
+                }
+
+                var risk = ToPrivacyRisk(kind, info, evidence);
+                current[(kind, info.Pid, info.StartTimeUtc)] = risk;
+            }
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+        }
+    }
+
+    void AddCapabilityRisks(
+        IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
+        PrivacyRiskKind kind,
+        CapabilityUsageProbe probe,
+        string evidence)
+    {
+        foreach (string path in probe.InUseApps())
+        {
+            foreach (var info in FindProcessesByPath(path))
+            {
+                if (!IsSeewoCapabilityProcess(info)) continue;
+                current[(kind, info.Pid, info.StartTimeUtc)] = ToPrivacyRisk(kind, info, evidence);
+            }
+        }
+    }
+
+    static IEnumerable<TargetProcessInfo> FindProcessesByPath(string executablePath)
+    {
+        string name;
+        try { name = Path.GetFileNameWithoutExtension(executablePath); }
+        catch { yield break; }
+        if (string.IsNullOrWhiteSpace(name)) yield break;
+
+        var processes = Process.GetProcessesByName(name);
+        try
+        {
+            foreach (var process in processes)
+            {
+                TargetProcessInfo info;
+                try { info = TargetProcessInfo.FromProcess(process); }
+                catch { continue; }
+                if (string.Equals(info.ExecutablePath, executablePath, StringComparison.OrdinalIgnoreCase))
+                    yield return info;
+            }
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+        }
+    }
+
+    static PrivacyRiskSnapshot ToPrivacyRisk(PrivacyRiskKind kind, TargetProcessInfo info, string evidence)
+        => new(kind, true, info.Pid, info.StartTimeUtc, info.ProcessName, info.ExecutablePath, evidence);
+
+    internal static bool IsExpectedPrivacyTarget(
+        PrivacyRiskKind kind,
+        string processName,
+        string product,
+        string originalFilename,
+        bool signedBySeewo)
+    {
+        bool seewoProduct = product.Contains("希沃", StringComparison.OrdinalIgnoreCase);
+        return kind switch
+        {
+            PrivacyRiskKind.Camera =>
+                processName.Equals("media_capture", StringComparison.OrdinalIgnoreCase) &&
+                originalFilename.Equals("media_capture.exe", StringComparison.OrdinalIgnoreCase) &&
+                seewoProduct && signedBySeewo,
+            PrivacyRiskKind.ScreenCapture =>
+                processName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase) &&
+                originalFilename.Equals("screenCapture.exe", StringComparison.OrdinalIgnoreCase) &&
+                seewoProduct && signedBySeewo,
+            PrivacyRiskKind.RemoteControl =>
+                processName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase) &&
+                originalFilename.Equals("rtcRemoteDesktop.exe", StringComparison.OrdinalIgnoreCase) &&
+                seewoProduct && signedBySeewo,
+            _ => false,
+        };
+    }
+
+    static bool IsSeewoCapabilityProcess(TargetProcessInfo info)
+        => info.IsSignedBySeewo && info.Product.Contains("希沃", StringComparison.OrdinalIgnoreCase);
+
+    void PublishPrivacyRisk(PrivacyRiskSnapshot risk, bool prompt)
+    {
+        PluginLog.Info($"[隐私风险] {RiskName(risk.Kind)} {(risk.Active ? "活动" : "结束")}: " +
+            $"pid={risk.ProcessId}, {risk.Evidence}");
+        RaisePrivacyRiskOnUi(risk);
+        if (ShouldPromptPrivacyRisk(Config.PrivacyRiskResponse, prompt, risk.Active, risk.ProcessId))
+            QueuePrivacyPrompt(risk);
+    }
+
+    internal static bool ShouldPromptPrivacyRisk(
+        PrivacyRiskResponseMode mode,
+        bool promptRequested,
+        bool active,
+        int processId)
+        => mode == PrivacyRiskResponseMode.Prompt && promptRequested && active && processId > 0;
+
+    void QueuePrivacyPrompt(PrivacyRiskSnapshot risk)
+    {
+        bool start;
+        lock (_privacyGate)
+        {
+            if (!_promptedPrivacyProcesses.Add((risk.ProcessId, risk.ProcessStartTimeUtc))) return;
+            _privacyPromptQueue.Enqueue(risk);
+            start = !_privacyPromptShowing;
+            if (start) _privacyPromptShowing = true;
+        }
+        if (start) Dispatcher.UIThread.Post(ShowNextPrivacyPrompt);
+    }
+
+    async void ShowNextPrivacyPrompt()
+    {
+        PrivacyRiskSnapshot? risk;
+        lock (_privacyGate)
+        {
+            if (_privacyPromptQueue.Count == 0)
+            {
+                _privacyPromptShowing = false;
+                return;
+            }
+            risk = _privacyPromptQueue.Dequeue();
+            if (!_privacyRisks.ContainsKey((risk.Kind, risk.ProcessId, risk.ProcessStartTimeUtc)))
+            {
+                Dispatcher.UIThread.Post(ShowNextPrivacyPrompt);
+                return;
+            }
+        }
+
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                Title = "发现" + RiskName(risk.Kind),
+                Content = $"进程：{risk.ProcessName}.exe (PID {risk.ProcessId})\n" +
+                          $"依据：{risk.Evidence}\n路径：{risk.ExecutablePath}",
+                PrimaryButtonText = "结束进程",
+                CloseButtonText = "允许本次",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            {
+                var result = await Task.Run(() => TerminatePrivacyRisk(risk));
+                _lastPrivacyOperation = result.Message;
+                if (!result.Success)
+                {
+                    await new ContentDialog
+                    {
+                        Title = "结束进程失败",
+                        Content = result.Message,
+                        CloseButtonText = "关闭",
+                    }.ShowAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _lastPrivacyOperation = "确认框显示失败：" + ex.Message;
+            PluginLog.Warn(_lastPrivacyOperation);
+        }
+        finally
+        {
+            ShowNextPrivacyPrompt();
+        }
+    }
+
+    public PluginOperationResult TerminatePrivacyRisk(PrivacyRiskSnapshot risk)
+    {
+        if (risk.ProcessId <= 0 || risk.ProcessStartTimeUtc is null || string.IsNullOrWhiteSpace(risk.ExecutablePath))
+            return PluginOperationResult.Fail("风险快照没有可安全终止的进程信息");
+
+        try
+        {
+            using var process = Process.GetProcessById(risk.ProcessId);
+            var current = TargetProcessInfo.FromProcess(process);
+            if (current.StartTimeUtc != risk.ProcessStartTimeUtc ||
+                !string.Equals(current.ExecutablePath, risk.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                return PluginOperationResult.Fail("进程身份已变化，已拒绝终止以避免 PID 复用误杀");
+
+            bool verified = IsExpectedPrivacyTarget(
+                risk.Kind, current.ProcessName, current.Product, current.OriginalFilename, current.IsSignedBySeewo) ||
+                IsSeewoCapabilityProcess(current);
+            if (!verified) return PluginOperationResult.Fail("进程未通过希沃数字签名和产品校验，已拒绝终止");
+
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(2000);
+            string message = $"已结束 {current.ProcessName}.exe (pid={current.Pid})";
+            PluginLog.Info("[隐私防护] " + message);
+            return PluginOperationResult.Ok(message);
+        }
+        catch (ArgumentException) { return PluginOperationResult.Fail("目标进程已退出"); }
+        catch (Exception ex) { return PluginOperationResult.Fail("结束进程失败：" + ex.Message); }
+    }
+
+    static string RiskName(PrivacyRiskKind kind) => kind switch
+    {
+        PrivacyRiskKind.Camera => "摄像头访问",
+        PrivacyRiskKind.ScreenCapture => "屏幕采集风险",
+        PrivacyRiskKind.RemoteControl => "远程控制风险",
+        PrivacyRiskKind.Microphone => "麦克风访问",
+        _ => "隐私风险",
+    };
 
     /// <summary>
     /// 融合有效活动态 = hook latch OR（启用融合 &amp;&amp; OS 探测）。hook 沉默但 OS 说在用时补发合成帧，
@@ -233,15 +549,12 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             foreach (var p in procs)
             {
                 try { candidates.Add(TargetProcessInfo.FromProcess(p)); }
-                catch { candidates.Add(new TargetProcessInfo(p.Id, "", "", "", "", "", false, null)); }
+                catch { candidates.Add(new TargetProcessInfo(p.Id, p.ProcessName, "", "", "", "", "", "", null, false, false, null)); }
             }
 
-            // 希沃 2026 版本的媒体采集工具箱入口位于 toolbox\media_capture\media_capture.exe。
-            // 多实例时优先选这个路径，再退回到有希沃版本信息的进程，最后才取 pid 最小的实例。
             return candidates
-                .OrderByDescending(c => c.IsSeewoMediaCaptureToolbox)
-                .ThenByDescending(c => c.IsLikelySeewo)
-                .ThenBy(c => c.Pid)
+                .Where(c => c.IsExpectedSeewoMediaCapture)
+                .OrderBy(c => c.Pid)
                 .FirstOrDefault();
         }
         finally
@@ -303,6 +616,16 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     /// <summary>融合后的有效活动态（hook latch 或 OS 探测），供 PrivacyIslandRuntime.CameraActive/规则读取。</summary>
     public bool EffectiveCameraActive => _fusedActive;
+
+    public bool IsPrivacyRiskActive(PrivacyRiskKind kind)
+    {
+        lock (_privacyGate) return _privacyRisks.Keys.Any(key => key.Kind == kind);
+    }
+
+    public IReadOnlyList<PrivacyRiskSnapshot> ActivePrivacyRisks
+    {
+        get { lock (_privacyGate) return _privacyRisks.Values.ToArray(); }
+    }
 
     /// <summary>当前是否处于暂停态（任一暂停源生效）。供规则读取。</summary>
     public bool EffectivePaused
@@ -375,8 +698,12 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     {
         Config.Clamp();
         Config.Save(_folder);
+        if (Config.PrivacyRiskResponse == PrivacyRiskResponseMode.NotifyOnly)
+        {
+            lock (_privacyGate) _privacyPromptQueue.Clear();
+        }
         ApplyEffectiveToBridge();
-        PluginLog.Info($"设置已保存：延迟 {Config.MinDelaySeconds}-{Config.MaxDelaySeconds}s, 隐身={Config.StealthMode}, 语音={Config.SpeechEnabled}（隐身需重注入生效）");
+        PluginLog.Info($"设置已保存：延迟 {Config.MinDelaySeconds}-{Config.MaxDelaySeconds}s, 隐身={Config.StealthMode}, 语音={Config.SpeechEnabled}, 隐私风险处理={PrivacyRiskResponseName()}（隐身需重注入生效）");
     }
 
     /// <summary>把当前生效的延迟（覆盖优先于基准）与暂停态一次性写入共享内存。</summary>
@@ -389,6 +716,21 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     /// <summary>应用内功能测试：注入一帧合成状态，走真实分发路径（提醒/触发器/规则/统计全联动），无需真注入。</summary>
     public void Simulate(int state, string message) => Bridge?.Simulate(state, message);
 
+    public void SimulatePrivacyRisk(PrivacyRiskKind kind)
+    {
+        var active = new PrivacyRiskSnapshot(kind, true, 0, null, "simulation", "（模拟）", "应用内模拟");
+        lock (_privacyGate) _privacyRisks[(kind, 0, null)] = active;
+        PublishPrivacyRisk(active, prompt: false);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1200);
+            bool removed;
+            lock (_privacyGate) removed = _privacyRisks.Remove((kind, 0, null));
+            if (removed)
+                PublishPrivacyRisk(active with { Active = false, Evidence = "应用内模拟结束" }, prompt: false);
+        });
+    }
+
     /// <summary>诊断信息：文件/IPC/目标进程/注入/权限状态，给设置页的功能测试区展示。</summary>
     public string Diagnostics()
     {
@@ -399,7 +741,11 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
         var live = Bridge?.GetLiveness();
         bool hookActive = Bridge?.CameraActive == true;
-        var inUseApps = _probe.InUseApps();
+        var inUseApps = _cameraProbe.InUseApps();
+        var privacyRisks = ActivePrivacyRisks;
+        string privacySummary = privacyRisks.Count == 0
+            ? "无"
+            : string.Join("; ", privacyRisks.Select(r => $"{RiskName(r.Kind)} pid={r.ProcessId} ({r.Evidence})"));
         string Age(DateTime? t) => t is DateTime u ? $"{(DateTime.UtcNow - u).TotalSeconds:0}s 前" : "从未";
         string hbLine = live is null ? "未知"
             : !live.HeartbeatSupported ? "不支持（DLL 从未写入，退化为无心跳）"
@@ -429,8 +775,16 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             $"OS 摄像头在用(media_capture): {(_osCameraInUse ? "是" : "否")}\n" +
             $"OS 摄像头在用(任意应用): {(inUseApps.Count == 0 ? "无" : string.Join("; ", inUseApps))}\n" +
             $"融合有效活动: {(_fusedActive ? "是" : "否")}\n" +
-            $"hook 与 OS 一致性: {(hookActive == _osCameraInUse ? "一致" : "不一致（其一未捕获）")}";
+            $"hook 与 OS 一致性: {(hookActive == _osCameraInUse ? "一致" : "不一致（其一未捕获）")}\n" +
+            $"当前隐私风险: {privacySummary}\n" +
+            $"隐私风险处理: {PrivacyRiskResponseName()}\n" +
+            $"隐私候选校验: {_privacyScanNote}\n" +
+            $"最近隐私操作: {_lastPrivacyOperation}";
     }
+
+    string PrivacyRiskResponseName() => Config.PrivacyRiskResponse == PrivacyRiskResponseMode.NotifyOnly
+        ? "仅提示"
+        : "询问后处理";
 
     static string StateName(int? state) => state switch
     {
@@ -570,21 +924,28 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     sealed record TargetProcessInfo(
         int Pid,
+        string ProcessName,
         string ExecutablePath,
         string FileVersion,
         string ProductVersion,
         string Description,
         string Product,
+        string OriginalFilename,
+        DateTime? StartTimeUtc,
+        bool IsSignedBySeewo,
         bool Is32Bit,
         string? Machine)
     {
-        public bool IsSeewoMediaCaptureToolbox =>
-            ExecutablePath.Contains(@"\toolbox\media_capture\media_capture.exe", StringComparison.OrdinalIgnoreCase);
+        public bool IsExpectedSeewoMediaCapture =>
+            ProcessName.Equals("media_capture", StringComparison.OrdinalIgnoreCase) &&
+            OriginalFilename.Equals("media_capture.exe", StringComparison.OrdinalIgnoreCase) &&
+            Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) &&
+            IsSignedBySeewo;
 
         public bool IsLikelySeewo =>
-            IsSeewoMediaCaptureToolbox ||
-            Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) ||
-            Description.Contains("媒体采集", StringComparison.OrdinalIgnoreCase);
+            IsExpectedSeewoMediaCapture ||
+            IsSignedBySeewo && (Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) ||
+                                Description.Contains("媒体采集", StringComparison.OrdinalIgnoreCase));
 
         public string DisplayName
         {
@@ -592,7 +953,6 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             {
                 string arch = Machine ?? (Is32Bit ? "x86" : "x64/未知");
                 if (!string.IsNullOrWhiteSpace(FileVersion)) arch += ", v" + FileVersion;
-                if (IsSeewoMediaCaptureToolbox) arch += ", toolbox";
                 return arch;
             }
         }
@@ -611,13 +971,20 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             }
 
             string? machine = TryReadPeMachine(path);
+            DateTime? startTimeUtc = null;
+            try { startTimeUtc = process.StartTime.ToUniversalTime(); }
+            catch { }
             return new TargetProcessInfo(
                 process.Id,
+                process.ProcessName,
                 path,
                 version?.FileVersion ?? "",
                 version?.ProductVersion ?? "",
                 version?.FileDescription ?? "",
                 version?.ProductName ?? "",
+                version?.OriginalFilename ?? "",
+                startTimeUtc,
+                SeewoSignatureVerifier.IsSignedBySeewo(path),
                 string.Equals(machine, "x86", StringComparison.OrdinalIgnoreCase),
                 machine);
         }
@@ -693,9 +1060,16 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     /// <summary>在 Avalonia UI 线程分发状态帧（提醒/触发器会触达 UI；读线程与 timer 线程都是后台线程）。</summary>
     static void RaiseStateOnUi(CaptureSnapshot s)
     {
-        var ui = Avalonia.Threading.Dispatcher.UIThread;
+        var ui = Dispatcher.UIThread;
         if (ui.CheckAccess()) PrivacyIslandRuntime.RaiseState(s);
         else ui.Post(() => PrivacyIslandRuntime.RaiseState(s));
+    }
+
+    static void RaisePrivacyRiskOnUi(PrivacyRiskSnapshot risk)
+    {
+        var ui = Dispatcher.UIThread;
+        if (ui.CheckAccess()) PrivacyIslandRuntime.RaisePrivacyRisk(risk);
+        else ui.Post(() => PrivacyIslandRuntime.RaisePrivacyRisk(risk));
     }
 
     static int ParseDelaySeconds(string msg)
@@ -708,6 +1082,7 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     {
         _timer?.Dispose();
         _timer = null;
+        if (ReferenceEquals(PrivacyIslandRuntime.Monitor, this)) PrivacyIslandRuntime.Monitor = null;
         if (Bridge != null)
         {
             Bridge.StateReceived -= OnState;
