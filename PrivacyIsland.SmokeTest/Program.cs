@@ -148,6 +148,14 @@ return;
 
 void RunPrivacyChecks()
 {
+    var pollAt = DateTime.UtcNow;
+    Assert(!PrivacyIsland.Orchestrator.CaptureMonitor.IsHeavyPollDue(
+        pollAt.AddMilliseconds(2999), pollAt),
+        "重扫描闸门：3 秒内不重复扫描");
+    Assert(PrivacyIsland.Orchestrator.CaptureMonitor.IsHeavyPollDue(
+        pollAt.AddMilliseconds(3000), pollAt),
+        "重扫描闸门：到达 3 秒时扫描");
+
     const string path = @"C:\x\media_capture.exe";
     var inUse = new PrivacyIsland.Native.CapabilityUsageProbe("webcam",
         () => new[] { new PrivacyIsland.Native.CapabilityUsageProbe.CapabilityUsage(path, 1, 0, false) });

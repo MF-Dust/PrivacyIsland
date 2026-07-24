@@ -554,7 +554,6 @@ public class MainSettingsPage : SettingsPageBase
         Dispatcher.UIThread.Post(() =>
         {
             RefreshStats();
-            RefreshDiagnostics();
         });
     }
 

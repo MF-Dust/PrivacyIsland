@@ -27,6 +27,8 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     const string DllFileName = "PrivacyIslandHook.dll";
     const string InjectorFileName = "nmm_injector.exe";
     static readonly TimeSpan InjectionRetryInterval = TimeSpan.FromSeconds(15);
+    // ponytail: 3s polling keeps the fallback detector cheap; use process events only if this ceiling becomes too slow.
+    static readonly TimeSpan HeavyPollInterval = TimeSpan.FromSeconds(3);
 
     // 自愈阈值。反汇编确认 hook DLL 有一条专用心跳线程：每 ~5s（WaitForSingleObject 超时 5000ms）
     // 在互斥锁下把 GetTickCount() 写入 heartbeat 偏移；不随捕获活动变化，是纯粹的「DLL 存活」信号。
@@ -38,11 +40,14 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     readonly ILogger<CaptureMonitor> _logger;
     Timer? _timer;
     int _lastInjectedPid;     // 同一目标进程注入成功后不重复处理
+    DateTime? _lastInjectedStartTimeUtc;
+    string _lastInjectedPath = "";
     int _lastAttemptPid;      // 注入失败时保留 pid，并按冷却时间重试
     DateTime _lastAttemptUtc;
     int _lastInjectionCode;
     string _lastInjectionMessage = "尚未尝试注入";
     int _polling;             // 防止轮询重入
+    DateTime _lastHeavyPollUtc = DateTime.MinValue;
     bool _awaitingDelay;      // 收到 start 后，等首条 "Delay N s" 以统计本次延迟
 
     // OS 独立探测 + 融合/自愈状态（除标注外仅 timer 线程访问）。
@@ -54,8 +59,14 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     bool _syntheticActive;           // 是否已补发过合成 start（避免重复）
     DateTime _injectedUtc;           // 本 pid 最近一次成功注入时刻
     int _healthPid;                  // 当前健康跟踪的 pid
+    DateTime? _healthStartTimeUtc;
     int _reinjectBudget;             // 该 pid 剩余自愈重注入预算
     bool _loggedTargetPid;           // 发现/消失日志去抖
+    bool _hookSilentWarningActive;   // hook 静默告警按一次会话去抖
+
+    readonly object _scanGate = new();
+    readonly object _snapshotGate = new();
+    MonitoringSnapshot _snapshot = MonitoringSnapshot.Empty;
 
     // 希沃隐私风险：timer 线程维护状态，UI/规则线程读取；确认框按 PID 去重并串行显示。
     readonly object _privacyGate = new();
@@ -124,13 +135,15 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     void PollOnce()
     {
-        var target = FindTargetProcess();
+        DateTime now = DateTime.UtcNow;
+        bool heavyRefresh = false;
+        if (IsHeavyPollDue(now, _lastHeavyPollUtc)) RefreshMonitoringSnapshot(out heavyRefresh);
 
-        // 每拍都跑 OS 探测 + 融合——即使已注入的 pid 也要跑，「已开却没测到」正是发生在这里。
-        bool osInUse = target?.ExecutablePath is string p && p.Length > 0 && _cameraProbe.IsInUseBy(p);
-        _osCameraInUse = osInUse;
+        var snapshot = GetMonitoringSnapshot();
+        var target = snapshot.Target;
+        bool osInUse = snapshot.CameraOsInUse;
         UpdateFusion(target, osInUse);
-        PollPrivacyRisks(target, osInUse);
+        if (heavyRefresh) PollPrivacyRisks(snapshot);
 
         if (target is null)
         {
@@ -138,28 +151,184 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             if (Bridge?.CameraActive == true) Bridge.ForceInactive("media_capture 已退出");
             _fusedActive = false;   // 目标已消失，融合态立即置否，不等下一拍
             _lastInjectedPid = 0;
+            _lastInjectedStartTimeUtc = null;
+            _lastInjectedPath = "";
             _lastAttemptPid = 0;
+            _healthPid = 0;
+            _healthStartTimeUtc = null;
             return;
         }
 
         if (!_loggedTargetPid) { PluginLog.Info($"发现 media_capture.exe (pid={target.Pid}, {target.DisplayName})"); _loggedTargetPid = true; }
 
-        if (target.Pid == _lastInjectedPid) { MaybeSelfHeal(target, osInUse); return; }   // 已处理——但仍监控 hook 是否真活着
+        if (IsSameInjectedInstance(target))
+        {
+            if (heavyRefresh) MaybeSelfHeal(target, osInUse);
+            return;
+        }   // 已处理——但仍监控 hook 是否真活着
+        if (!heavyRefresh) return; // 缓存尚未刷新，不对可能已退出的旧 PID 发起注入
         if (target.Pid == _lastAttemptPid &&
             DateTime.UtcNow - _lastAttemptUtc < InjectionRetryInterval)
             return;                                     // 失败后冷却，避免每秒刷日志/拉起注入器
 
         _lastAttemptPid = target.Pid;
         _lastAttemptUtc = DateTime.UtcNow;
-        if (_healthPid != target.Pid) { _healthPid = target.Pid; _reinjectBudget = MaxSelfHealReinjects; }
+        if (_healthPid != target.Pid || _healthStartTimeUtc != target.StartTimeUtc)
+        {
+            _healthPid = target.Pid;
+            _healthStartTimeUtc = target.StartTimeUtc;
+            _reinjectBudget = MaxSelfHealReinjects;
+        }
         var result = Inject(target);
-        if (result.Success) { _lastInjectedPid = target.Pid; _injectedUtc = DateTime.UtcNow; }
+        if (result.Success)
+        {
+            _lastInjectedPid = target.Pid;
+            _lastInjectedStartTimeUtc = target.StartTimeUtc;
+            _lastInjectedPath = target.ExecutablePath;
+            _injectedUtc = DateTime.UtcNow;
+        }
     }
 
-    void PollPrivacyRisks(TargetProcessInfo? cameraTarget, bool cameraOsInUse)
+    bool IsSameInjectedInstance(TargetProcessInfo target)
+        => target.Pid == _lastInjectedPid &&
+           (target.StartTimeUtc is DateTime start && _lastInjectedStartTimeUtc is DateTime injectedStart
+               ? start == injectedStart
+               : string.Equals(target.ExecutablePath, _lastInjectedPath, StringComparison.OrdinalIgnoreCase));
+
+    internal static bool IsHeavyPollDue(DateTime nowUtc, DateTime lastPollUtc)
+        => nowUtc - lastPollUtc >= HeavyPollInterval;
+
+    MonitoringSnapshot GetMonitoringSnapshot()
+    {
+        lock (_snapshotGate) return _snapshot;
+    }
+
+    MonitoringSnapshot RefreshMonitoringSnapshot(out bool updated)
+    {
+        updated = false;
+        lock (_scanGate)
+        {
+            MonitoringSnapshot snapshot;
+            try
+            {
+                snapshot = ScanMonitoringSnapshot();
+            }
+            catch (Exception ex)
+            {
+                _lastHeavyPollUtc = DateTime.UtcNow;
+                PluginLog.Error("监测扫描异常：" + ex.Message);
+                return GetMonitoringSnapshot();
+            }
+
+            _lastHeavyPollUtc = DateTime.UtcNow;
+            lock (_snapshotGate) _snapshot = snapshot;
+            _osCameraInUse = snapshot.CameraOsInUse;
+            updated = true;
+            return snapshot;
+        }
+    }
+
+    MonitoringSnapshot ScanMonitoringSnapshot()
+    {
+        var cameraApps = _cameraProbe.InUseApps();
+        var screenApps = Config.EnableScreenCaptureMonitoring
+            ? _screenProbe.InUseApps()
+            : Array.Empty<string>();
+        var microphoneApps = Config.EnableMicrophoneMonitoring
+            ? _microphoneProbe.InUseApps()
+            : Array.Empty<string>();
+
+        var candidateNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { TargetProcessName };
+        if (Config.EnableScreenCaptureMonitoring) candidateNames.Add("screenCapture");
+        if (Config.EnableRemoteControlMonitoring) candidateNames.Add("rtcRemoteDesktop");
+        AddCapabilityProcessNames(candidateNames, screenApps);
+        AddCapabilityProcessNames(candidateNames, microphoneApps);
+
+        var screenPaths = screenApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var microphonePaths = microphoneApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targetCandidates = new List<TargetProcessInfo>();
+        var screenProcesses = new List<TargetProcessInfo>();
+        var remoteProcesses = new List<TargetProcessInfo>();
+        var screenCapabilityProcesses = new List<TargetProcessInfo>();
+        var microphoneCapabilityProcesses = new List<TargetProcessInfo>();
+        var notes = new List<string>();
+
+        var processes = Process.GetProcesses();
+        try
+        {
+            foreach (var process in processes)
+            {
+                string processName;
+                try { processName = process.ProcessName; }
+                catch { continue; }
+                if (!candidateNames.Contains(processName)) continue;
+
+                TargetProcessInfo info;
+                try { info = TargetProcessInfo.FromProcess(process); }
+                catch
+                {
+                    notes.Add($"{processName}.exe(pid={process.Id}) 无法读取元数据");
+                    continue;
+                }
+
+                if (processName.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase))
+                    targetCandidates.Add(info);
+                if (processName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase))
+                    screenProcesses.Add(info);
+                if (processName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase))
+                    remoteProcesses.Add(info);
+                if (screenPaths.Contains(info.ExecutablePath))
+                    screenCapabilityProcesses.Add(info);
+                if (microphonePaths.Contains(info.ExecutablePath))
+                    microphoneCapabilityProcesses.Add(info);
+            }
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+        }
+
+        var target = targetCandidates
+            .Where(c => c.IsExpectedSeewoMediaCapture)
+            .OrderBy(c => c.Pid)
+            .FirstOrDefault();
+        bool cameraOsInUse = target?.ExecutablePath is { Length: > 0 } path &&
+            cameraApps.Contains(path, StringComparer.OrdinalIgnoreCase);
+
+        return new MonitoringSnapshot(
+            target,
+            cameraOsInUse,
+            cameraApps.ToArray(),
+            screenProcesses.ToArray(),
+            remoteProcesses.ToArray(),
+            screenCapabilityProcesses.ToArray(),
+            microphoneCapabilityProcesses.ToArray(),
+            notes.ToArray(),
+            target is null ? "未检测" : DescribeBootConfig(target.ExecutablePath),
+            target is null ? "未检测" : DescribeListeningPorts(target.Pid),
+            target is null ? "未检测" : DescribeEstablished(target.Pid),
+            DateTime.UtcNow);
+    }
+
+    static void AddCapabilityProcessNames(ISet<string> names, IEnumerable<string> paths)
+    {
+        foreach (string path in paths)
+        {
+            try
+            {
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (!string.IsNullOrWhiteSpace(name)) names.Add(name);
+            }
+            catch { }
+        }
+    }
+
+    void PollPrivacyRisks(MonitoringSnapshot snapshot)
     {
         var current = new Dictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot>();
-        var notes = new List<string>();
+        var notes = new List<string>(snapshot.ProcessNotes);
+        TargetProcessInfo? cameraTarget = snapshot.Target;
+        bool cameraOsInUse = snapshot.CameraOsInUse;
 
         bool cameraTargetValid = cameraTarget is not null && IsExpectedPrivacyTarget(
             PrivacyRiskKind.Camera,
@@ -181,19 +350,19 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
         if (Config.EnableScreenCaptureMonitoring)
         {
-            AddProcessRisks(current, notes, PrivacyRiskKind.ScreenCapture, "screenCapture",
+            AddProcessRisks(current, notes, PrivacyRiskKind.ScreenCapture, snapshot.ScreenProcesses,
                 "希沃屏幕采集组件已启动（进程信号，不代表已确认每次截图）");
-            AddCapabilityRisks(current, PrivacyRiskKind.ScreenCapture, _screenProbe,
+            AddCapabilityRisks(current, PrivacyRiskKind.ScreenCapture, snapshot.ScreenCapabilityProcesses,
                 "Windows 检测到无边框屏幕捕获正在使用");
         }
         if (Config.EnableRemoteControlMonitoring)
         {
-            AddProcessRisks(current, notes, PrivacyRiskKind.RemoteControl, "rtcRemoteDesktop",
+            AddProcessRisks(current, notes, PrivacyRiskKind.RemoteControl, snapshot.RemoteProcesses,
                 "希沃远程桌面组件已启动");
         }
         if (Config.EnableMicrophoneMonitoring)
         {
-            AddCapabilityRisks(current, PrivacyRiskKind.Microphone, _microphoneProbe,
+            AddCapabilityRisks(current, PrivacyRiskKind.Microphone, snapshot.MicrophoneCapabilityProcesses,
                 "Windows 检测到麦克风正在使用");
         }
 
@@ -231,76 +400,32 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
         ICollection<string> notes,
         PrivacyRiskKind kind,
-        string processName,
+        IEnumerable<TargetProcessInfo> processes,
         string evidence)
     {
-        var processes = Process.GetProcessesByName(processName);
-        try
+        foreach (var info in processes)
         {
-            foreach (var process in processes)
+            if (!IsExpectedPrivacyTarget(kind, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
-                TargetProcessInfo info;
-                try { info = TargetProcessInfo.FromProcess(process); }
-                catch
-                {
-                    notes.Add($"{processName}.exe(pid={process.Id}) 无法读取元数据");
-                    continue;
-                }
-
-                if (!IsExpectedPrivacyTarget(kind, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
-                {
-                    notes.Add($"{processName}.exe(pid={process.Id}) 未通过希沃数字签名/产品校验");
-                    continue;
-                }
-
-                var risk = ToPrivacyRisk(kind, info, evidence);
-                current[(kind, info.Pid, info.StartTimeUtc)] = risk;
+                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                continue;
             }
-        }
-        finally
-        {
-            foreach (var process in processes) process.Dispose();
+
+            var risk = ToPrivacyRisk(kind, info, evidence);
+            current[(kind, info.Pid, info.StartTimeUtc)] = risk;
         }
     }
 
     void AddCapabilityRisks(
         IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
         PrivacyRiskKind kind,
-        CapabilityUsageProbe probe,
+        IEnumerable<TargetProcessInfo> processes,
         string evidence)
     {
-        foreach (string path in probe.InUseApps())
+        foreach (var info in processes)
         {
-            foreach (var info in FindProcessesByPath(path))
-            {
-                if (!IsSeewoCapabilityProcess(info)) continue;
-                current[(kind, info.Pid, info.StartTimeUtc)] = ToPrivacyRisk(kind, info, evidence);
-            }
-        }
-    }
-
-    static IEnumerable<TargetProcessInfo> FindProcessesByPath(string executablePath)
-    {
-        string name;
-        try { name = Path.GetFileNameWithoutExtension(executablePath); }
-        catch { yield break; }
-        if (string.IsNullOrWhiteSpace(name)) yield break;
-
-        var processes = Process.GetProcessesByName(name);
-        try
-        {
-            foreach (var process in processes)
-            {
-                TargetProcessInfo info;
-                try { info = TargetProcessInfo.FromProcess(process); }
-                catch { continue; }
-                if (string.Equals(info.ExecutablePath, executablePath, StringComparison.OrdinalIgnoreCase))
-                    yield return info;
-            }
-        }
-        finally
-        {
-            foreach (var process in processes) process.Dispose();
+            if (!IsSeewoCapabilityProcess(info)) continue;
+            current[(kind, info.Pid, info.StartTimeUtc)] = ToPrivacyRisk(kind, info, evidence);
         }
     }
 
@@ -469,15 +594,29 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         _fusedActive = fused;
 
         // 融合关闭或目标消失：结束可能在进行的合成会话（补 stop 让 start/stop 配对）。
-        if (!fuseOn || target is null) { EndSyntheticSession(hookActive); return; }
+        if (!fuseOn || target is null)
+        {
+            if (_hookSilentWarningActive) _hookSilentWarningActive = false;
+            EndSyntheticSession(hookActive);
+            return;
+        }
 
         var live = Bridge?.GetLiveness();
         bool hookSilent = live is null ||
             live.LastFrameUtc is not DateTime lf || DateTime.UtcNow - lf > TimeSpan.FromSeconds(5);
 
-        // 关键告警：这正是「摄像头已开但插件没获取到」。
-        if (osInUse && !hookActive && hookSilent)
+        // 关键告警：这正是「摄像头已开但插件没获取到」。只在状态边沿记录，避免日志 I/O 造成额外卡顿。
+        bool hookSilentNow = osInUse && !hookActive && hookSilent;
+        if (hookSilentNow && !_hookSilentWarningActive)
+        {
+            _hookSilentWarningActive = true;
             PluginLog.Warn($"检测到 media_capture 正在使用摄像头，但 hook 通道无上报（可能未生效）：pid={target.Pid}");
+        }
+        else if (!hookSilentNow && _hookSilentWarningActive)
+        {
+            _hookSilentWarningActive = false;
+            PluginLog.Info($"media_capture hook 通道已恢复或摄像头已停止：pid={target.Pid}");
+        }
 
         if (!_syntheticActive && osInUse && !hookActive && hookSilent)
         {
@@ -517,7 +656,6 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         {
             if (osInUse)
             {
-                PluginLog.Warn($"hook 可能未生效（pid={target.Pid}）：OS 探测到在用但无 Ready/心跳/上报。");
                 ScheduleReinject(target, "hook 未确认存活");
             }
             return;
@@ -534,33 +672,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         _reinjectBudget--;
         PluginLog.Warn($"自愈重注入（{why}），剩余预算 {_reinjectBudget}：pid={target.Pid}");
         _lastInjectedPid = 0;                                   // 解闩
-        _lastAttemptPid = 0;                                    // 让下一拍立即重注入（对该 pid 的 15s 冷却失效）
+        _lastInjectedStartTimeUtc = null;
+        _lastInjectedPath = "";
+        _lastAttemptPid = 0;                                    // 让下一次重扫描立即重注入（对该 pid 的 15s 冷却失效）
         _lastAttemptUtc = DateTime.UtcNow - InjectionRetryInterval;
-    }
-
-    static TargetProcessInfo? FindTargetProcess()
-    {
-        var procs = Process.GetProcessesByName(TargetProcessName);
-        if (procs.Length == 0) return null;
-
-        try
-        {
-            var candidates = new List<TargetProcessInfo>(procs.Length);
-            foreach (var p in procs)
-            {
-                try { candidates.Add(TargetProcessInfo.FromProcess(p)); }
-                catch { candidates.Add(new TargetProcessInfo(p.Id, p.ProcessName, "", "", "", "", "", "", null, false, false, null)); }
-            }
-
-            return candidates
-                .Where(c => c.IsExpectedSeewoMediaCapture)
-                .OrderBy(c => c.Pid)
-                .FirstOrDefault();
-        }
-        finally
-        {
-            foreach (var p in procs) p.Dispose();
-        }
     }
 
     PluginOperationResult Inject(TargetProcessInfo target)
@@ -734,19 +849,19 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     /// <summary>诊断信息：文件/IPC/目标进程/注入/权限状态，给设置页的功能测试区展示。</summary>
     public string Diagnostics()
     {
-        var target = FindTargetProcess();
+        var snapshot = GetMonitoringSnapshot();
+        var target = snapshot.Target;
         string targetSummary = target is null ? "否" : $"是 (pid={target.Pid}, {target.DisplayName})";
-        string bootSummary = target is null ? "未检测" : DescribeBootConfig(target.ExecutablePath);
-        string portsSummary = target is null ? "未检测" : DescribeListeningPorts(target.Pid);
 
         var live = Bridge?.GetLiveness();
         bool hookActive = Bridge?.CameraActive == true;
-        var inUseApps = _cameraProbe.InUseApps();
+        var inUseApps = snapshot.CameraInUseApps;
         var privacyRisks = ActivePrivacyRisks;
         string privacySummary = privacyRisks.Count == 0
             ? "无"
             : string.Join("; ", privacyRisks.Select(r => $"{RiskName(r.Kind)} pid={r.ProcessId} ({r.Evidence})"));
         string Age(DateTime? t) => t is DateTime u ? $"{(DateTime.UtcNow - u).TotalSeconds:0}s 前" : "从未";
+        string scanAge = snapshot.UpdatedUtc == DateTime.MinValue ? "从未" : Age(snapshot.UpdatedUtc);
         string hbLine = live is null ? "未知"
             : !live.HeartbeatSupported ? "不支持（DLL 从未写入，退化为无心跳）"
             : $"{live.Heartbeat}（{Age(live.LastHeartbeatChangeUtc)}变化）";
@@ -762,9 +877,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             $"目标路径: {DisplayPath(target?.ExecutablePath)}\n" +
             $"目标版本: {DisplayVersion(target)}\n" +
             $"位数匹配: {mismatch}\n" +
-            $"目标 BootConfig: {bootSummary}\n" +
-            $"目标监听端口: {portsSummary}\n" +
-            $"目标 ESTABLISHED 连接数: {DescribeEstablished(target?.Pid ?? 0)}\n" +
+            $"监测快照: {scanAge}\n" +
+            $"目标 BootConfig: {snapshot.BootSummary}\n" +
+            $"目标监听端口: {snapshot.ListeningPorts}\n" +
+            $"目标 ESTABLISHED 连接数: {snapshot.EstablishedConnections}\n" +
             $"反编译接口: {MediaCaptureProtocol.CapabilitySummary}\n" +
             $"已注入的 pid: {(_lastInjectedPid == 0 ? "无" : _lastInjectedPid.ToString())}\n" +
             $"最近注入结果: {_lastInjectionMessage} (code={_lastInjectionCode})\n" +
@@ -829,7 +945,13 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     public PluginOperationResult InjectNow()
     {
-        var target = FindTargetProcess();
+        var target = RefreshMonitoringSnapshot(out bool refreshed).Target;
+        if (!refreshed)
+        {
+            const string message = "监测扫描失败，未执行手动注入";
+            PluginLog.Warn(message);
+            return PluginOperationResult.Fail(message);
+        }
         if (target is null)
         {
             const string message = "未找到 media_capture.exe，无法注入";
@@ -840,13 +962,28 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         _lastAttemptPid = target.Pid;
         _lastAttemptUtc = DateTime.UtcNow;
         var result = Inject(target);
-        if (result.Success) _lastInjectedPid = target.Pid;
+        if (result.Success)
+        {
+            _lastInjectedPid = target.Pid;
+            _lastInjectedStartTimeUtc = target.StartTimeUtc;
+            _lastInjectedPath = target.ExecutablePath;
+            _healthPid = target.Pid;
+            _healthStartTimeUtc = target.StartTimeUtc;
+            _reinjectBudget = MaxSelfHealReinjects;
+            _injectedUtc = DateTime.UtcNow;
+        }
         return result;
     }
 
     public PluginOperationResult EjectNow()
     {
-        var target = FindTargetProcess();
+        var target = RefreshMonitoringSnapshot(out bool refreshed).Target;
+        if (!refreshed)
+        {
+            const string message = "监测扫描失败，未执行手动弹射";
+            PluginLog.Warn(message);
+            return PluginOperationResult.Fail(message);
+        }
         if (target is null)
         {
             const string message = "未找到 media_capture.exe，无法弹射";
@@ -856,6 +993,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
         int code = RunInjector($"--eject {target.Pid} \"{_dllPath}\"");
         _lastInjectedPid = 0;
+        _lastInjectedStartTimeUtc = null;
+        _lastInjectedPath = "";
+        _healthPid = 0;
+        _healthStartTimeUtc = null;
         _lastInjectionCode = code;
         if (code == 0)
         {
@@ -920,6 +1061,35 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         {
             return "读取失败：" + ex.Message;
         }
+    }
+
+    sealed record MonitoringSnapshot(
+        TargetProcessInfo? Target,
+        bool CameraOsInUse,
+        IReadOnlyList<string> CameraInUseApps,
+        IReadOnlyList<TargetProcessInfo> ScreenProcesses,
+        IReadOnlyList<TargetProcessInfo> RemoteProcesses,
+        IReadOnlyList<TargetProcessInfo> ScreenCapabilityProcesses,
+        IReadOnlyList<TargetProcessInfo> MicrophoneCapabilityProcesses,
+        IReadOnlyList<string> ProcessNotes,
+        string BootSummary,
+        string ListeningPorts,
+        string EstablishedConnections,
+        DateTime UpdatedUtc)
+    {
+        public static MonitoringSnapshot Empty => new(
+            null,
+            false,
+            Array.Empty<string>(),
+            Array.Empty<TargetProcessInfo>(),
+            Array.Empty<TargetProcessInfo>(),
+            Array.Empty<TargetProcessInfo>(),
+            Array.Empty<TargetProcessInfo>(),
+            Array.Empty<string>(),
+            "未检测",
+            "未检测",
+            "未检测",
+            DateTime.MinValue);
     }
 
     sealed record TargetProcessInfo(
