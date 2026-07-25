@@ -24,7 +24,9 @@ public class Plugin : PluginBase
         services.AddHostedService(sp => sp.GetRequiredService<CaptureMonitor>());
 
         // 课程感知联动：注入可空 ILessonsService（宿主未提供时降级为空操作，不阻断加载）。
-        services.AddSingleton(sp => new LessonAwareController(sp.GetService<ILessonsService>()));
+        services.AddSingleton(sp => new LessonAwareController(
+            sp.GetService<ILessonsService>(),
+            sp.GetRequiredService<CaptureMonitor>()));
         services.AddHostedService(sp => sp.GetRequiredService<LessonAwareController>());
 
         // 提醒：摄像头开启/监视/关闭弹 ClassIsland 通知（替代原生覆盖层）。

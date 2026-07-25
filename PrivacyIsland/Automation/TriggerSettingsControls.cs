@@ -1,9 +1,9 @@
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
-using Avalonia.Layout;
 using ClassIsland.Core.Abstractions.Controls;
 using PrivacyIsland.Ipc;
+using PrivacyIsland.Settings;
 
 namespace PrivacyIsland.Automation;
 
@@ -21,7 +21,7 @@ public class CameraStateTriggerControl : TriggerSettingsControlBase<CameraStateT
         _state.Items.Add(new StateOption(IpcProtocol.StatusReady, "DLL 就绪"));
         _state.Items.Add(new StateOption(IpcProtocol.StatusInfo, "信息日志"));
 
-        Content = Row("触发状态", _state);
+        Content = SettingsUi.Row("触发状态", _state, 90);
         _state.SelectionChanged += (_, _) => Save();
     }
 
@@ -53,20 +53,6 @@ public class CameraStateTriggerControl : TriggerSettingsControlBase<CameraStateT
         _state.SelectedIndex = 0;
     }
 
-    static Control Row(string label, Control control)
-    {
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            Children =
-            {
-                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Width = 90 },
-                control,
-            },
-        };
-    }
-
     sealed record StateOption(int State, string Name)
     {
         public override string ToString() => Name;
@@ -83,7 +69,7 @@ public class ProtectionPauseTriggerControl : TriggerSettingsControlBase<Protecti
         _state.Items.Add(new PauseOption(true, "防护暂停时"));
         _state.Items.Add(new PauseOption(false, "防护恢复时"));
 
-        Content = Row("触发状态", _state);
+        Content = SettingsUi.Row("触发状态", _state, 90);
         _state.SelectionChanged += (_, _) => Save();
     }
 
@@ -99,20 +85,6 @@ public class ProtectionPauseTriggerControl : TriggerSettingsControlBase<Protecti
     {
         if (_loading || _state.SelectedItem is not PauseOption option) return;
         Settings.TriggerWhenPaused = option.Paused;
-    }
-
-    static Control Row(string label, Control control)
-    {
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            Children =
-            {
-                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Width = 90 },
-                control,
-            },
-        };
     }
 
     sealed record PauseOption(bool Paused, string Name)

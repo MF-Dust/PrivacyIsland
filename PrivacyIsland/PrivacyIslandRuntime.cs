@@ -22,19 +22,13 @@ public static class PrivacyIslandRuntime
     public static event Action<PrivacyRiskSnapshot>? PrivacyRiskReceived;
 
     internal static void RaiseState(CaptureSnapshot s)
-    {
-        try { StateReceived?.Invoke(s); } catch { /* 订阅方异常隔离 */ }
-    }
+        => EventDispatch.Invoke(StateReceived, s);
 
     internal static void RaiseProtectionPauseChanged(bool paused)
-    {
-        try { ProtectionPauseChanged?.Invoke(paused); } catch { /* 订阅方异常隔离 */ }
-    }
+        => EventDispatch.Invoke(ProtectionPauseChanged, paused);
 
     internal static void RaisePrivacyRisk(PrivacyRiskSnapshot risk)
-    {
-        try { PrivacyRiskReceived?.Invoke(risk); } catch { /* 订阅方异常隔离 */ }
-    }
+        => EventDispatch.Invoke(PrivacyRiskReceived, risk);
 
     /// <summary>摄像头当前是否正被访问（融合 hook 与 OS 探测），供规则读取。</summary>
     public static bool CameraActive => Monitor?.EffectiveCameraActive ?? false;
@@ -78,4 +72,5 @@ public static class PrivacyIslandRuntime
     public static void Simulate(int state, string message) => Monitor?.Simulate(state, message);
     public static void SimulatePrivacyRisk(PrivacyRiskKind kind) => Monitor?.SimulatePrivacyRisk(kind);
     public static string Diagnostics() => Monitor?.Diagnostics() ?? "（编排器未就绪）";
+    internal static void RequestDiagnosticsRefresh() => Monitor?.RequestDiagnosticsRefresh();
 }

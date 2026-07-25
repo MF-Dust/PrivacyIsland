@@ -15,7 +15,7 @@ public sealed class CaptureStats
 
     [System.Text.Json.Serialization.JsonIgnore]
     string _folder = "";
-    static readonly object Gate = new();
+    readonly object _gate = new();
     static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
     static string PathFor(string folder) => Path.Combine(folder, "statistics.json");
@@ -37,7 +37,7 @@ public sealed class CaptureStats
 
     public void RecordCapture(bool isDirectShow)
     {
-        lock (Gate)
+        lock (_gate)
         {
             TotalCaptures++;
             if (isDirectShow) DirectShowCaptures++; else MediaFoundationCaptures++;
@@ -49,12 +49,12 @@ public sealed class CaptureStats
 
     public void AddDelay(int seconds)
     {
-        lock (Gate) { TotalDelaySeconds += seconds; Save(); }
+        lock (_gate) { TotalDelaySeconds += seconds; Save(); }
     }
 
     public void Reset()
     {
-        lock (Gate)
+        lock (_gate)
         {
             TotalCaptures = DirectShowCaptures = MediaFoundationCaptures = TotalDelaySeconds = 0;
             FirstCapture = LastCapture = null;
@@ -65,7 +65,7 @@ public sealed class CaptureStats
     /// <summary>给设置页展示的多行摘要。</summary>
     public string Summary()
     {
-        lock (Gate)
+        lock (_gate)
         {
             string f = FirstCapture?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
             string l = LastCapture?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";

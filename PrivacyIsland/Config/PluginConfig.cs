@@ -88,20 +88,13 @@ public sealed class PluginConfig
     /// <summary>校验：与原版一致，延迟限 1..30，且 max>=min。</summary>
     public void Clamp()
     {
-        if (MinDelaySeconds < 1) MinDelaySeconds = 1;
-        if (MinDelaySeconds > 30) MinDelaySeconds = 30;
-        if (MaxDelaySeconds < 1) MaxDelaySeconds = 1;
-        if (MaxDelaySeconds > 30) MaxDelaySeconds = 30;
-        if (MaxDelaySeconds < MinDelaySeconds) MaxDelaySeconds = MinDelaySeconds;
-        if (OverlayDurationSeconds < 1) OverlayDurationSeconds = 1;
-        if (OverlayDurationSeconds > 30) OverlayDurationSeconds = 30;
+        MinDelaySeconds = Math.Clamp(MinDelaySeconds, 1, 30);
+        MaxDelaySeconds = Math.Max(MinDelaySeconds, Math.Clamp(MaxDelaySeconds, 1, 30));
+        OverlayDurationSeconds = Math.Clamp(OverlayDurationSeconds, 1, 30);
 
         // 上课加强延迟：同样限 1..30 且 max>=min。
-        if (ClassMinDelaySeconds < 1) ClassMinDelaySeconds = 1;
-        if (ClassMinDelaySeconds > 30) ClassMinDelaySeconds = 30;
-        if (ClassMaxDelaySeconds < 1) ClassMaxDelaySeconds = 1;
-        if (ClassMaxDelaySeconds > 30) ClassMaxDelaySeconds = 30;
-        if (ClassMaxDelaySeconds < ClassMinDelaySeconds) ClassMaxDelaySeconds = ClassMinDelaySeconds;
+        ClassMinDelaySeconds = Math.Clamp(ClassMinDelaySeconds, 1, 30);
+        ClassMaxDelaySeconds = Math.Max(ClassMinDelaySeconds, Math.Clamp(ClassMaxDelaySeconds, 1, 30));
 
         if (!Enum.IsDefined(PrivacyRiskResponse)) PrivacyRiskResponse = PrivacyRiskResponseMode.Prompt;
 
@@ -114,6 +107,6 @@ public sealed class PluginConfig
     static string Truncate(string? s)
     {
         s ??= "";
-        return s.Length > MaxTextLength ? s.Substring(0, MaxTextLength) : s;
+        return s.Length > MaxTextLength ? s[..MaxTextLength] : s;
     }
 }

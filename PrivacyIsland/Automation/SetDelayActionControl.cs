@@ -1,7 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Avalonia.Layout;
 using ClassIsland.Core.Abstractions.Controls;
+using PrivacyIsland.Settings;
 
 namespace PrivacyIsland.Automation;
 
@@ -15,8 +15,8 @@ public abstract class DelayActionControlBase<TSettings> : ActionSettingsControlB
     protected DelayActionControlBase()
     {
         var panel = new StackPanel { Spacing = 6 };
-        panel.Children.Add(Row("最小延迟（秒）", _numMin));
-        panel.Children.Add(Row("最大延迟（秒）", _numMax));
+        panel.Children.Add(SettingsUi.Row("最小延迟（秒）", _numMin, 120));
+        panel.Children.Add(SettingsUi.Row("最大延迟（秒）", _numMax, 120));
         Content = panel;
 
         _numMin.ValueChanged += (_, _) => Save();
@@ -48,19 +48,6 @@ public abstract class DelayActionControlBase<TSettings> : ActionSettingsControlB
         Settings.Max = max;
     }
 
-    static Control Row(string label, Control control)
-    {
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            Children =
-            {
-                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Width = 120 },
-                control,
-            },
-        };
-    }
 }
 
 /// <summary>「立即设定延迟」行动的设置界面：两个数值框编辑 Min/Max（代码构建，无 AXAML）。</summary>

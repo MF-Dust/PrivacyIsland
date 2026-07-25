@@ -13,12 +13,19 @@ namespace PrivacyIsland.Orchestrator;
 public sealed class LessonAwareController : IHostedService, IDisposable
 {
     readonly ILessonsService? _lessons;   // 可空：宿主未提供时本控制器降级为空操作，不拖垮插件加载
+    readonly CaptureMonitor? _monitor;
     bool _inClass;                         // 最近一次已知的课程状态（true=上课中）
     bool _subscribed;
 
     public LessonAwareController(ILessonsService? lessons)
     {
         _lessons = lessons;
+    }
+
+    internal LessonAwareController(ILessonsService? lessons, CaptureMonitor monitor)
+        : this(lessons)
+    {
+        _monitor = monitor;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -66,9 +73,9 @@ public sealed class LessonAwareController : IHostedService, IDisposable
 
     void ApplyInternal()
     {
-        var monitor = PrivacyIslandRuntime.Monitor;
-        var cfg = PrivacyIslandRuntime.Config;
-        if (monitor == null || cfg == null) return;
+        var monitor = _monitor ?? PrivacyIslandRuntime.Monitor;
+        if (monitor == null) return;
+        var cfg = monitor.Config;
 
         // 未启用：撤掉本联动的一切影响。
         if (!cfg.LessonAwareEnabled)
@@ -115,7 +122,8 @@ public sealed class LessonAwareController : IHostedService, IDisposable
             _subscribed = false;
         }
         // 退出时撤掉本联动的暂停/覆盖，避免残留影响。
-        PrivacyIslandRuntime.Monitor?.SetPauseSource("lesson", false);
-        PrivacyIslandRuntime.Monitor?.ApplyDelayOverride(null, null);
+        var monitor = _monitor ?? PrivacyIslandRuntime.Monitor;
+        monitor?.SetPauseSource("lesson", false);
+        monitor?.ApplyDelayOverride(null, null);
     }
 }

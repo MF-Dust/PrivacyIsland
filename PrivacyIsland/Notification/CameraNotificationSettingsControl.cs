@@ -6,6 +6,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using ClassIsland.Core.Abstractions.Controls;
 using PrivacyIsland.Config;
+using PrivacyIsland.Settings;
 
 namespace PrivacyIsland.Notification;
 
@@ -45,19 +46,19 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
             Spacing = 8,
             Children =
             {
-                Row("摄像头启动时提醒", _swStart),
-                Row("进入监视时提醒", _swWatching),
-                Row("摄像头关闭时提醒", _swStop),
-                Row("隐私风险出现时提醒", _swPrivacyRisk),
-                Row("语音播报", _swSpeech),
-                Row("通知显示时长（秒）", _numDuration),
-                Row("启动提醒文案", _txtStart),
-                Row("监视提醒文案", _txtWatching),
-                Row("关闭提醒文案", _txtStop),
-                Row("隐私风险提醒模板", _txtPrivacyRisk),
-                Row("启动提醒颜色", ColorFooter(_txtColorStart, _swatchStart)),
-                Row("监视提醒颜色", ColorFooter(_txtColorWatching, _swatchWatching)),
-                Row("关闭提醒颜色", ColorFooter(_txtColorStop, _swatchStop)),
+                SettingsUi.Row("摄像头启动时提醒", _swStart, 150),
+                SettingsUi.Row("进入监视时提醒", _swWatching, 150),
+                SettingsUi.Row("摄像头关闭时提醒", _swStop, 150),
+                SettingsUi.Row("隐私风险出现时提醒", _swPrivacyRisk, 150),
+                SettingsUi.Row("语音播报", _swSpeech, 150),
+                SettingsUi.Row("通知显示时长（秒）", _numDuration, 150),
+                SettingsUi.Row("启动提醒文案", _txtStart, 150),
+                SettingsUi.Row("监视提醒文案", _txtWatching, 150),
+                SettingsUi.Row("关闭提醒文案", _txtStop, 150),
+                SettingsUi.Row("隐私风险提醒模板", _txtPrivacyRisk, 150),
+                SettingsUi.Row("启动提醒颜色", ColorFooter(_txtColorStart, _swatchStart), 150),
+                SettingsUi.Row("监视提醒颜色", ColorFooter(_txtColorWatching, _swatchWatching), 150),
+                SettingsUi.Row("关闭提醒颜色", ColorFooter(_txtColorStop, _swatchStop), 150),
             }
         };
 
@@ -158,20 +159,6 @@ public class CameraNotificationSettingsControl : NotificationProviderControlBase
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center,
             Children = { box, swatch },
-        };
-    }
-
-    static Control Row(string label, Control control)
-    {
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 10,
-            Children =
-            {
-                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Width = 150 },
-                control,
-            },
         };
     }
 

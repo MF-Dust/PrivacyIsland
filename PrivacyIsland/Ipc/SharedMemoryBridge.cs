@@ -157,8 +157,7 @@ public sealed class SharedMemoryBridge : IDisposable
                 _cameraActive = false;
                 break;
         }
-        try { StateReceived?.Invoke(s); }
-        catch { /* 订阅方异常不拖垮读线程 */ }
+        EventDispatch.Invoke(StateReceived, s);
     }
 
     // 轮询路径：currState 是「最后写入值」，只在与 latch 真分歧（丢了 SetEvent）时翻转并补一帧，
@@ -178,21 +177,14 @@ public sealed class SharedMemoryBridge : IDisposable
     }
 
     void EmitReconciled(CaptureSnapshot s, string message)
-    {
-        try { StateReceived?.Invoke(s with { Message = message }); }
-        catch { }
-    }
+        => EventDispatch.Invoke(StateReceived, s with { Message = message });
 
     CaptureSnapshot? TryReadSnapshot()
     {
-        if (_mutex is null || _view is null) return null;
-        bool held = false;
-        try
+        if (_view is null) return null;
+        CaptureSnapshot? snapshot = null;
+        if (!WithMutex(() =>
         {
-            try { held = _mutex.WaitOne(2000); }
-            catch (AbandonedMutexException) { held = true; } // DLL 进程持锁而亡——锁已归我们
-            if (!held) return null;
-
             var buf = new byte[IpcProtocol.LogBufferBytes];
             _view.ReadArray(IpcProtocol.OffLogBuffer, buf, 0, buf.Length);
             string msg = DecodeWide(buf);
@@ -200,12 +192,9 @@ public sealed class SharedMemoryBridge : IDisposable
             int err = _view.ReadInt32(IpcProtocol.OffPotError);
             uint hb = _view.ReadUInt32(IpcProtocol.OffHeartbeat);
             uint cc = _view.ReadUInt32(IpcProtocol.OffCaptureCount);
-            return new CaptureSnapshot(state, err, msg, hb, cc);
-        }
-        finally
-        {
-            if (held) { try { _mutex!.ReleaseMutex(); } catch { } }
-        }
+            snapshot = new CaptureSnapshot(state, err, msg, hb, cc);
+        })) return null;
+        return snapshot;
     }
 
     /// <summary>写配置（host→DLL 的字段）。只动 min/max/paused/stealth，不碰 DLL 写的状态字段。</summary>
@@ -251,20 +240,26 @@ public sealed class SharedMemoryBridge : IDisposable
         if (!_cameraActive) return;
         _cameraActive = false;
         var snap = new CaptureSnapshot(IpcProtocol.StatusStop, 0, "(补偿) " + reason);
-        try { StateReceived?.Invoke(snap); }
-        catch { }
+        EventDispatch.Invoke(StateReceived, snap);
     }
 
     void WriteUnderMutex(Action write)
     {
-        if (_mutex is null || _view is null) return;
+        if (_view is null) return;
+        WithMutex(write);
+    }
+
+    bool WithMutex(Action action)
+    {
+        if (_mutex is null) return false;
         bool held = false;
         try
         {
             try { held = _mutex.WaitOne(2000); }
             catch (AbandonedMutexException) { held = true; }
-            if (!held) return;
-            write();
+            if (!held) return false;
+            action();
+            return true;
         }
         finally
         {
