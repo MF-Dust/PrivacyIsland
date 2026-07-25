@@ -26,9 +26,12 @@ PrivacyIsland 是一个面向 ClassIsland v2 的隐私防护插件，用于监�
 
 ```text
 PrivacyIsland/                 ClassIsland 插件主体
+PrivacyIsland/Orchestrator/    监测扫描、注入编排、隐私风险与课程联动
+PrivacyIsland/Ipc/             共享内存桥接和 IPC 协议
+PrivacyIsland/Settings/        设置页及诊断/模拟控件
+PrivacyIsland/Automation/      自动化触发器、规则和行动
 PrivacyIsland/Native/          随插件分发的原生 DLL 与注入器
-PrivacyIsland.SmokeTest/       共享内存桥接与 IPC 流程烟雾测试
-GUIDE.md                       ClassIsland 插件开发速查
+PrivacyIsland.SmokeTest/       无依赖烟测：IPC、隐私逻辑、签名和可选真注入
 ```
 
 ## 构建
@@ -81,7 +84,13 @@ PrivacyIsland\cipx\PrivacyIsland.cipx
 
 ## 测试
 
-运行烟雾测试：
+运行完整的默认烟测（IPC 往返 + 隐私逻辑回归）：
+
+```powershell
+dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj
+```
+
+只运行不需要共享内存的逻辑检查：
 
 ```powershell
 dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj -- privacy
@@ -91,6 +100,12 @@ dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj -- p
 
 ```powershell
 dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj -- signature <文件路径...>
+```
+
+`live` 模式会启动 32 位 notepad 并执行真实注入，仅在具备桌面会话和原生构件时手动运行：
+
+```powershell
+dotnet run --project PrivacyIsland.SmokeTest\PrivacyIsland.SmokeTest.csproj -- live
 ```
 
 设置页中的“模拟摄像头事件”会走完整 IPC 分发路径，可用于验证提醒、自动化触发器、规则和统计，不需要真实注入。

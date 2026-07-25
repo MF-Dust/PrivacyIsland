@@ -85,13 +85,7 @@ internal sealed class MonitoringScanner
         AddCapabilityProcessNames(candidateNames, screenApps);
         AddCapabilityProcessNames(candidateNames, microphoneApps);
 
-        var screenPaths = screenApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var microphonePaths = microphoneApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var targetCandidates = new List<TargetProcessInfo>();
-        var screenProcesses = new List<TargetProcessInfo>();
-        var remoteProcesses = new List<TargetProcessInfo>();
-        var screenCapabilityProcesses = new List<TargetProcessInfo>();
-        var microphoneCapabilityProcesses = new List<TargetProcessInfo>();
+        var candidates = new List<TargetProcessInfo>();
         var notes = new List<string>();
 
         var processes = Process.GetProcesses();
@@ -112,16 +106,7 @@ internal sealed class MonitoringScanner
                     continue;
                 }
 
-                if (processName.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase))
-                    targetCandidates.Add(info);
-                if (processName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase))
-                    screenProcesses.Add(info);
-                if (processName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase))
-                    remoteProcesses.Add(info);
-                if (screenPaths.Contains(info.ExecutablePath))
-                    screenCapabilityProcesses.Add(info);
-                if (microphonePaths.Contains(info.ExecutablePath))
-                    microphoneCapabilityProcesses.Add(info);
+                candidates.Add(info);
             }
         }
         finally
@@ -129,23 +114,56 @@ internal sealed class MonitoringScanner
             foreach (var process in processes) process.Dispose();
         }
 
-        var target = targetCandidates
+        return BuildSnapshot(
+            config,
+            cameraApps,
+            screenApps,
+            microphoneApps,
+            candidates,
+            notes,
+            DateTime.UtcNow);
+    }
+
+    internal static MonitoringSnapshot BuildSnapshot(
+        PluginConfig config,
+        IEnumerable<string> cameraApps,
+        IEnumerable<string> screenApps,
+        IEnumerable<string> microphoneApps,
+        IEnumerable<TargetProcessInfo> processes,
+        IEnumerable<string> notes,
+        DateTime updatedUtc)
+    {
+        var processList = processes.ToArray();
+        var cameraAppList = cameraApps.ToArray();
+        var cameraPaths = cameraAppList.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var screenPaths = screenApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var microphonePaths = microphoneApps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var target = processList
+            .Where(c => c.ProcessName.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase))
             .Where(c => c.IsExpectedSeewoMediaCapture)
             .OrderBy(c => c.Pid)
             .FirstOrDefault();
         bool cameraOsInUse = target?.ExecutablePath is { Length: > 0 } path &&
-            cameraApps.Contains(path, StringComparer.OrdinalIgnoreCase);
+            cameraPaths.Contains(path);
 
         return new MonitoringSnapshot(
             target,
             cameraOsInUse,
-            cameraApps.ToArray(),
-            screenProcesses.ToArray(),
-            remoteProcesses.ToArray(),
-            screenCapabilityProcesses.ToArray(),
-            microphoneCapabilityProcesses.ToArray(),
+            cameraAppList,
+            config.EnableScreenCaptureMonitoring
+                ? processList.Where(p => p.ProcessName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
+            config.EnableRemoteControlMonitoring
+                ? processList.Where(p => p.ProcessName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
+            config.EnableScreenCaptureMonitoring
+                ? processList.Where(p => screenPaths.Contains(p.ExecutablePath)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
+            config.EnableMicrophoneMonitoring
+                ? processList.Where(p => microphonePaths.Contains(p.ExecutablePath)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
             notes.ToArray(),
-            DateTime.UtcNow);
+            updatedUtc);
     }
 
     public MonitoringDiagnostics ScanDiagnostics(TargetProcessInfo? target)

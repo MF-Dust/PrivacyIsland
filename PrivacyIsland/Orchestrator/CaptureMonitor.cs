@@ -208,8 +208,10 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
             {
                 var previous = GetMonitoringSnapshot();
                 snapshot = _scanner.Scan(Config);
-                bool diagnosticsDue = !SameProcessInstance(previous.Target, snapshot.Target) ||
-                    Interlocked.Exchange(ref _diagnosticsRefreshRequested, 0) != 0;
+                bool diagnosticsDue = ShouldRefreshDiagnostics(
+                    previous.Target,
+                    snapshot.Target,
+                    Interlocked.Exchange(ref _diagnosticsRefreshRequested, 0) != 0);
                 if (diagnosticsDue) _diagnostics = _scanner.ScanDiagnostics(snapshot.Target);
             }
             catch (Exception ex)
@@ -229,6 +231,12 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
 
     internal void RequestDiagnosticsRefresh()
         => Interlocked.Exchange(ref _diagnosticsRefreshRequested, 1);
+
+    internal static bool ShouldRefreshDiagnostics(
+        TargetProcessInfo? previous,
+        TargetProcessInfo? current,
+        bool requested)
+        => requested || !SameProcessInstance(previous, current);
 
     internal static bool ShouldTrackCameraPrivacyRisk(bool fusedActive, bool targetVerified)
         => PrivacyRiskCoordinator.ShouldTrackCameraPrivacyRisk(fusedActive, targetVerified);
