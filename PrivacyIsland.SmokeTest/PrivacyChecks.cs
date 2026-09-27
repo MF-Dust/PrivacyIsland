@@ -270,24 +270,14 @@ internal static class PrivacyChecks
 
         var screen = new ScreenBounds(0, 0, 1920, 1080);
         var shown = new WindowSample(7, "课表", "ClassIsland", 100, 100, 400, 200, true, false);
-        var baseline = new Dictionary<long, WindowSample> { [shown.Hwnd] = shown };
-        var hidden = WindowAnomalyLogic.Detect(baseline, new[] { shown with { Visible = false } }, screen);
-        SmokeAssert.That(hidden.Count == 1 && hidden[0].Kind == WindowAnomalyKind.Hidden,
-            "可见窗口变为隐藏时记录异常");
-        var offScreen = WindowAnomalyLogic.Detect(baseline, new[] { shown with { X = -800 } }, screen);
-        SmokeAssert.That(offScreen.Count == 1 && offScreen[0].Kind == WindowAnomalyKind.MovedOffScreen,
-            "完全移出虚拟屏幕时记录异常");
-        SmokeAssert.That(WindowAnomalyLogic.Detect(baseline, new[] { shown with { Minimized = true } }, screen).Count == 0,
-            "最小化不记为窗口异常");
-        SmokeAssert.That(WindowAnomalyLogic.Detect(baseline, Array.Empty<WindowSample>(), screen).Count == 0,
-            "窗口关闭不记为异常");
-        SmokeAssert.That(WindowAnomalyLogic.Detect(baseline, new[] { shown with { X = 1900 } }, screen).Count == 0,
-            "仍有一部分在屏幕内时不记为移出");
-        var kept = WindowAnomalyLogic.AdvanceBaseline(baseline, new[] { shown with { X = -800 } }, screen);
-        SmokeAssert.That(WindowAnomalyLogic.Detect(kept, new[] { shown with { X = -800 } }, screen).Count == 1,
-            "窗口停留在屏幕外时异常保持");
-        SmokeAssert.That(WindowAnomalyLogic.Detect(kept, new[] { shown }, screen).Count == 0,
-            "窗口回到屏幕内后不再报告异常");
+        SmokeAssert.That(WindowAnomalyLogic.Classify(shown with { Visible = false }, screen) == WindowAnomalyKind.Hidden,
+            "隐藏窗口归类为隐藏，不进入移出屏幕");
+        SmokeAssert.That(WindowAnomalyLogic.Classify(shown with { X = -800 }, screen) == WindowAnomalyKind.MovedOffScreen,
+            "完全移出虚拟屏幕时归类为移出");
+        SmokeAssert.That(WindowAnomalyLogic.Classify(shown with { Minimized = true }, screen) is null,
+            "最小化不归类为窗口异常");
+        SmokeAssert.That(WindowAnomalyLogic.Classify(shown with { X = 1900 }, screen) is null,
+            "仍有一部分在屏幕内时不归类为移出");
 
         var episode = new WindowEpisodeTracker();
         IReadOnlyList<WindowAnomaly> episodeNow = Array.Empty<WindowAnomaly>();
@@ -305,6 +295,30 @@ internal static class PrivacyChecks
         SmokeAssert.That(episodeNow.Count == 1, "连续移出屏幕才产生窗口提醒");
         SmokeAssert.That(episode.Observe(new[] { onceOff }, screen).Count == 1,
             "窗口停留在屏幕外时不另起提醒回合");
+
+        var closed = new WindowEpisodeTracker();
+        for (int i = 0; i < WindowEpisodeTracker.ArmSamples; i++)
+            closed.Observe(new[] { shown }, screen);
+        closed.Observe(new[] { onceOff }, screen);
+        closed.Observe(new[] { onceOff }, screen);
+        SmokeAssert.That(closed.Observe(Array.Empty<WindowSample>(), screen).Count == 0,
+            "窗口关闭后不再报告异常");
+
+        var returned = new WindowEpisodeTracker();
+        for (int i = 0; i < WindowEpisodeTracker.ArmSamples; i++)
+            returned.Observe(new[] { shown }, screen);
+        returned.Observe(new[] { onceOff }, screen);
+        returned.Observe(new[] { onceOff }, screen);
+        SmokeAssert.That(returned.Observe(new[] { shown }, screen).Count == 1,
+            "回到屏幕内一次仍保持异常");
+        SmokeAssert.That(returned.Observe(new[] { shown }, screen).Count == 0,
+            "连续回到屏幕内后不再报告异常");
+
+        var minimized = new WindowEpisodeTracker();
+        for (int i = 0; i < WindowEpisodeTracker.ArmSamples; i++)
+            minimized.Observe(new[] { shown }, screen);
+        SmokeAssert.That(minimized.Observe(new[] { shown with { Minimized = true } }, screen).Count == 0,
+            "最小化不产生窗口提醒");
 
         var published = new List<PrivacyRiskSnapshot>();
         var coordinator = new PrivacyRiskCoordinator(published.Add);

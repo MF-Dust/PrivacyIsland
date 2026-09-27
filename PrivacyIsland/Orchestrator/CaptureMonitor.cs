@@ -21,7 +21,6 @@ namespace PrivacyIsland.Orchestrator;
 public sealed class CaptureMonitor : IHostedService, IDisposable
 {
     static readonly TimeSpan InjectionRetryInterval = TimeSpan.FromSeconds(15);
-    // ponytail: 3s polling keeps the fallback detector cheap; use process events only if this ceiling becomes too slow.
     static readonly TimeSpan HeavyPollInterval = TimeSpan.FromSeconds(3);
 
     // 自愈阈值。反汇编确认 hook DLL 有一条专用心跳线程：每 ~5s（WaitForSingleObject 超时 5000ms）

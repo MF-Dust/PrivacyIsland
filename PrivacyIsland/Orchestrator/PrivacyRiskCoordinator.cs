@@ -158,7 +158,7 @@ internal sealed class PrivacyRiskCoordinator
             if (!IsExpectedPrivacyTarget(
                     PrivacyRiskKind.ScreenCapture, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
-                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                NoteUnverified(notes, info);
                 continue;
             }
 
@@ -184,7 +184,7 @@ internal sealed class PrivacyRiskCoordinator
             if (!IsExpectedPrivacyTarget(
                     PrivacyRiskKind.RemoteControl, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
-                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                NoteUnverified(notes, info);
                 continue;
             }
 
@@ -233,7 +233,7 @@ internal sealed class PrivacyRiskCoordinator
             if (!IsExpectedPrivacyTarget(
                     PrivacyRiskKind.LiveBroadcast, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
-                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                NoteUnverified(notes, info);
                 continue;
             }
 
@@ -267,7 +267,7 @@ internal sealed class PrivacyRiskCoordinator
             if (!IsExpectedPrivacyTarget(
                     PrivacyRiskKind.DeviceCamera, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
-                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                NoteUnverified(notes, info);
                 continue;
             }
 
@@ -290,20 +290,21 @@ internal sealed class PrivacyRiskCoordinator
         {
             if (anomaly.Kind != WindowAnomalyKind.MovedOffScreen) continue;
             var window = anomaly.Current;
-            string title = window.Title.Trim();
-            if (title.Length > 40) title = title[..40];
             var risk = new PrivacyRiskSnapshot(
                 PrivacyRiskKind.WindowChange,
                 true,
                 0,
                 null,
-                title,
+                WindowAnomalyLogic.ShortTitle(window.Title),
                 window.ClassName,
                 WindowAnomalyLogic.Describe(anomaly),
                 window.Hwnd);
             current[KeyOf(risk)] = risk;
         }
     }
+
+    static void NoteUnverified(ICollection<string> notes, TargetProcessInfo info)
+        => notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
 
     static bool HasFreshCapability(
         IEnumerable<CapabilityUsageProbe.CapabilityUsage> usages,

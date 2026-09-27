@@ -75,28 +75,7 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         if (_lastNotifiedCameraState == s.State) return;
         _lastNotifiedCameraState = s.State;
 
-        bool speech = cfg.SpeechEnabled;
-        var duration = TimeSpan.FromSeconds(cfg.OverlayDurationSeconds);
-        var brush = new SolidColorBrush(color);
-
-        try
-        {
-            Channel(ChannelId).ShowNotification(new NotificationRequest
-            {
-                MaskContent = NotificationContent.CreateSimpleTextContent(text, c =>
-                {
-                    c.Color = brush;
-                    c.Duration = duration;
-                    c.IsSpeechEnabled = speech;
-                    c.SpeechContent = text;
-                })
-            });
-            LogInformation("[提醒] 已显示：" + text);
-        }
-        catch (Exception ex)
-        {
-            LogError("[提醒] 显示失败：" + ex.Message);
-        }
+        ShowNotice(text, color, cfg, "[提醒] 已显示：" + text, "[提醒] 显示失败：");
     }
 
     void OnPrivacyRisk(PrivacyRiskSnapshot risk)
@@ -120,6 +99,11 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         var color = risk.Active
             ? ParseColor(cfg.ColorOnStart, Color.FromRgb(255, 0, 0))
             : ParseColor(cfg.ColorOnStop, Color.FromRgb(255, 105, 180));
+        ShowNotice(text, color, cfg, "[提醒] 已显示隐私风险：" + text.Replace('\n', ' '), "[提醒] 隐私风险显示失败：");
+    }
+
+    void ShowNotice(string text, Color color, CameraNotificationSettings cfg, string successLog, string failureLog)
+    {
         try
         {
             Channel(ChannelId).ShowNotification(new NotificationRequest
@@ -132,9 +116,12 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
                     c.SpeechContent = text;
                 })
             });
-            LogInformation("[提醒] 已显示隐私风险：" + text.Replace('\n', ' '));
+            LogInformation(successLog);
         }
-        catch (Exception ex) { LogError("[提醒] 隐私风险显示失败：" + ex.Message); }
+        catch (Exception ex)
+        {
+            LogError(failureLog + ex.Message);
+        }
     }
 
     static string RiskName(PrivacyRiskKind kind) => kind switch

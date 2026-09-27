@@ -28,9 +28,7 @@ internal readonly record struct WindowAnomaly(
     WindowSample Before,
     WindowSample Current);
 
-/// <summary>
-/// 比较本进程顶层窗口的相邻两次采样。只报告从正常显示变为隐藏或完全移出虚拟屏幕的窗口。
-/// </summary>
+/// <summary>判断顶层窗口是否可跟踪、是否仍在屏幕上，以及当前是隐藏还是完全移出虚拟屏幕。</summary>
 internal static class WindowAnomalyLogic
 {
     public const int MinTrackWidth = 80;
@@ -41,6 +39,12 @@ internal static class WindowAnomalyLogic
            !string.IsNullOrWhiteSpace(window.Title) &&
            window.Width >= MinTrackWidth &&
            window.Height >= MinTrackHeight;
+
+    public static string ShortTitle(string title)
+    {
+        title = title.Trim();
+        return title.Length > 40 ? title[..40] : title;
+    }
 
     public static long IntersectionArea(WindowSample window, ScreenBounds screen)
     {
@@ -64,62 +68,10 @@ internal static class WindowAnomalyLogic
         return null;
     }
 
-    public static IReadOnlyList<WindowAnomaly> Detect(
-        IReadOnlyDictionary<long, WindowSample> lastPresented,
-        IReadOnlyList<WindowSample> current,
-        ScreenBounds screen)
-    {
-        var currentByHwnd = new Dictionary<long, WindowSample>();
-        foreach (var window in current)
-        {
-            if (window.Hwnd != 0) currentByHwnd[window.Hwnd] = window;
-        }
-
-        var found = new List<WindowAnomaly>();
-        foreach (var (hwnd, before) in lastPresented)
-        {
-            if (!IsTrackable(before) || !IsPresented(before, screen)) continue;
-            if (!currentByHwnd.TryGetValue(hwnd, out var now)) continue;
-            if (Classify(now, screen) is not WindowAnomalyKind kind) continue;
-            found.Add(new WindowAnomaly(kind, before, now));
-        }
-        return found;
-    }
-
-    public static Dictionary<long, WindowSample> AdvanceBaseline(
-        IReadOnlyDictionary<long, WindowSample> lastPresented,
-        IReadOnlyList<WindowSample> current,
-        ScreenBounds screen)
-    {
-        var next = new Dictionary<long, WindowSample>();
-        foreach (var window in current)
-        {
-            if (!IsTrackable(window)) continue;
-            if (IsPresented(window, screen))
-            {
-                next[window.Hwnd] = window;
-                continue;
-            }
-
-            if (lastPresented.TryGetValue(window.Hwnd, out var before) &&
-                IsTrackable(before) &&
-                IsPresented(before, screen))
-                next[window.Hwnd] = before;
-        }
-        return next;
-    }
-
     public static string Describe(WindowAnomaly anomaly)
     {
-        string title = anomaly.Current.Title.Trim();
-        if (title.Length > 40) title = title[..40];
-        return anomaly.Kind switch
-        {
-            WindowAnomalyKind.Hidden =>
-                $"顶层窗口「{title}」从可见变为隐藏（HWND {anomaly.Current.Hwnd}，类名 {anomaly.Current.ClassName}，原位置 {Rect(anomaly.Before)}）",
-            _ =>
-                $"顶层窗口「{title}」被移出虚拟屏幕（HWND {anomaly.Current.Hwnd}，类名 {anomaly.Current.ClassName}，现位置 {Rect(anomaly.Current)}）",
-        };
+        var window = anomaly.Current;
+        return $"顶层窗口「{ShortTitle(window.Title)}」被移出虚拟屏幕（HWND {window.Hwnd}，类名 {window.ClassName}，现位置 {Rect(window)}）";
     }
 
     static string Rect(WindowSample window) => $"{window.X},{window.Y} {window.Width}x{window.Height}";

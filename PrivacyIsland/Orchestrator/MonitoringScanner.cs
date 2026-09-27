@@ -268,11 +268,6 @@ internal sealed record TargetProcessInfo(
         Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) &&
         IsSignedBySeewo;
 
-    public bool IsLikelySeewo =>
-        IsExpectedSeewoMediaCapture ||
-        IsSignedBySeewo && (Product.Contains("希沃", StringComparison.OrdinalIgnoreCase) ||
-                            Description.Contains("媒体采集", StringComparison.OrdinalIgnoreCase));
-
     public string DisplayName
     {
         get
