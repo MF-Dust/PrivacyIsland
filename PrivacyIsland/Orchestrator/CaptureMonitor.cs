@@ -48,6 +48,7 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
     readonly MonitoringScanner _scanner;
     readonly HookInjector _injector;
     readonly PrivacyRiskCoordinator _privacy;
+    readonly WindowChangeTracker _windows = new();
     volatile bool _osCameraInUse;    // media_capture 的 OS 探测结果（timer 写，诊断读）
     volatile bool _fusedActive;      // 融合后的有效活动态（timer 写，规则/诊断读）
     bool _syntheticActive;           // 是否已补发过合成 start（避免重复）
@@ -128,7 +129,11 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         var target = snapshot.Target;
         bool osInUse = snapshot.CameraOsInUse;
         UpdateFusion(target, osInUse);
-        if (heavyRefresh) _privacy.Update(snapshot, _fusedActive, Bridge?.CameraActive == true, Config);
+        if (heavyRefresh)
+        {
+            var windows = _windows.Collect(Config.EnableWindowChangeMonitoring);
+            _privacy.Update(snapshot, _fusedActive, Bridge?.CameraActive == true, Config, windows);
+        }
 
         if (target is null)
         {
@@ -264,6 +269,26 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         DateTime? processStartUtc)
         => PrivacyRiskCoordinator.ShouldTrackMicrophoneUse(
             signedBySeewo, product, processName, originalFilename, consentStart, consentStop, processStartUtc);
+
+    internal static bool ShouldConfirmLiveSession(bool targetVerified, bool cameraInUse, bool microphoneInUse, int establishedTcpCount)
+        => PrivacyRiskCoordinator.ShouldConfirmLiveSession(targetVerified, cameraInUse, microphoneInUse, establishedTcpCount);
+
+    internal static string DescribeLiveSession(bool microphoneInUse, bool cameraInUse, bool connected)
+        => PrivacyRiskCoordinator.DescribeLiveSession(microphoneInUse, cameraInUse, connected);
+
+    internal static bool ShouldTrackHostCameraUse(
+        bool signedBySeewo,
+        string product,
+        string processName,
+        string originalFilename,
+        long consentStart,
+        long consentStop,
+        DateTime? processStartUtc)
+        => PrivacyRiskCoordinator.ShouldTrackHostCameraUse(
+            signedBySeewo, product, processName, originalFilename, consentStart, consentStop, processStartUtc);
+
+    internal static bool CanTerminateRisk(PrivacyRiskKind kind, string processName)
+        => PrivacyRiskCoordinator.CanTerminateRisk(kind, processName);
 
     internal static bool IsExpectedPrivacyTarget(
         PrivacyRiskKind kind,

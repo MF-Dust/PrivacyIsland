@@ -122,6 +122,9 @@ internal sealed class DiagnosticsTestPanel : UserControl
         privacy.Children.Add(SimulateButton("模拟屏幕采集", () => SimulateRisk(PrivacyRiskKind.ScreenCapture)));
         privacy.Children.Add(SimulateButton("模拟远程控制", () => SimulateRisk(PrivacyRiskKind.RemoteControl)));
         privacy.Children.Add(SimulateButton("模拟麦克风访问", () => SimulateRisk(PrivacyRiskKind.Microphone)));
+        privacy.Children.Add(SimulateButton("模拟校园直播", () => SimulateRisk(PrivacyRiskKind.LiveBroadcast)));
+        privacy.Children.Add(SimulateButton("模拟宿主摄像头", () => SimulateRisk(PrivacyRiskKind.DeviceCamera)));
+        privacy.Children.Add(SimulateButton("模拟窗口异常", () => SimulateRisk(PrivacyRiskKind.WindowChange)));
         var privacyItem = SettingsUi.Item(Icons.ShieldErrorFilled, "模拟隐私风险", "验证隐私事件、触发器和规则，不会结束任何进程", privacy);
 
         var lesson = new StackPanel { Spacing = 4 };

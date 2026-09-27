@@ -60,6 +60,12 @@ public class Plugin : PluginBase
             _ => PrivacyIslandRuntime.RemoteControlActive);
         services.AddRule("privacy.island.rule.microphoneActive", "希沃正在使用麦克风", Icons.MegaphoneFilled,
             _ => PrivacyIslandRuntime.MicrophoneActive);
+        services.AddRule("privacy.island.rule.liveActive", "希沃校园直播活动", Icons.PlayFilled,
+            _ => PrivacyIslandRuntime.LiveActive);
+        services.AddRule("privacy.island.rule.deviceCameraActive", "希沃宿主正在使用摄像头", Icons.CameraFilled,
+            _ => PrivacyIslandRuntime.DeviceCameraActive);
+        services.AddRule("privacy.island.rule.windowChanged", "本程序窗口被隐藏或移出屏幕", Icons.WarningFilled,
+            _ => PrivacyIslandRuntime.WindowChangeActive);
         services.AddRule("privacy.island.rule.anyPrivacyRiskActive", "存在隐私风险", Icons.WarningFilled,
             _ => PrivacyIslandRuntime.AnyPrivacyRiskActive);
 

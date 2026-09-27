@@ -41,6 +41,9 @@ public sealed class PluginConfig
     public bool EnableScreenCaptureMonitoring { get; set; } = true;
     public bool EnableRemoteControlMonitoring { get; set; } = true;
     public bool EnableMicrophoneMonitoring { get; set; } = true;
+    public bool EnableLiveMonitoring { get; set; } = true;
+    public bool EnableDeviceCameraMonitoring { get; set; } = true;
+    public bool EnableWindowChangeMonitoring { get; set; } = true;
     public PrivacyRiskResponseMode PrivacyRiskResponse { get; set; } = PrivacyRiskResponseMode.Prompt;
 
     // 课程感知联动（接 ILessonsService）。默认全关，保持现有行为。

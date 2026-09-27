@@ -13,13 +13,15 @@ namespace PrivacyIsland.Notification;
 /// <summary>
 /// 摄像头与隐私风险提醒 provider（替代原生全屏覆盖层）。
 /// </summary>
-[NotificationProviderInfo("b1e7c0a2-3d4f-4a6b-9c1d-2e3f4a5b6c7d", "隐私防护", Icons.ShieldCheckmarkFilled, "希沃摄像头、屏幕、远控和麦克风风险提醒")]
+[NotificationProviderInfo("b1e7c0a2-3d4f-4a6b-9c1d-2e3f4a5b6c7d", "隐私防护", Icons.ShieldCheckmarkFilled, "希沃摄像头、屏幕、远控、麦克风、直播和窗口异常提醒")]
 [NotificationChannelInfo(ChannelId, "隐私事件", Icons.ShieldErrorFilled, "摄像头与隐私风险事件提醒")]
 public class CameraNotificationProvider : NotificationProviderBase<CameraNotificationSettings>
 {
     const string ChannelId = "c2f8d1b3-4e5a-4b7c-8d2e-3f4a5b6c7d8e";
 
     readonly ILogger<CameraNotificationProvider>? _logger;
+    readonly HashSet<(PrivacyRiskKind Kind, int Pid, long SubjectId)> _openNotices = new();
+    int? _lastNotifiedCameraState;
 
     public CameraNotificationProvider()
     {
@@ -70,6 +72,8 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         }
 
         if (!enabled) return;
+        if (_lastNotifiedCameraState == s.State) return;
+        _lastNotifiedCameraState = s.State;
 
         bool speech = cfg.SpeechEnabled;
         var duration = TimeSpan.FromSeconds(cfg.OverlayDurationSeconds);
@@ -101,6 +105,15 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         if (!ShouldShowGenericPrivacyNotification(
                 risk.Kind, risk.Active, cfg.NotifyOnPrivacyRisk, cfg.NotifyOnPrivacyRiskEnded))
             return;
+        var noticeId = (risk.Kind, risk.ProcessId, risk.SubjectId);
+        if (risk.Active)
+        {
+            if (!_openNotices.Add(noticeId)) return;
+        }
+        else if (!_openNotices.Remove(noticeId))
+        {
+            return;
+        }
         cfg.Clamp();
         string template = risk.Active ? cfg.PrivacyRiskTextTemplate : cfg.PrivacyRiskEndedTextTemplate;
         string text = FormatPrivacyRiskText(template, risk);
@@ -130,6 +143,9 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         PrivacyRiskKind.ScreenCapture => "屏幕采集",
         PrivacyRiskKind.RemoteControl => "远程控制",
         PrivacyRiskKind.Microphone => "麦克风访问",
+        PrivacyRiskKind.LiveBroadcast => "校园直播",
+        PrivacyRiskKind.DeviceCamera => "宿主摄像头",
+        PrivacyRiskKind.WindowChange => "窗口异常",
         _ => "未知风险",
     };
 
@@ -142,7 +158,8 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
 
     internal static string FormatPrivacyRiskText(string? template, PrivacyRiskSnapshot risk)
     {
-        string processName = risk.ProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+        string processName = risk.Kind == PrivacyRiskKind.WindowChange ||
+            risk.ProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
             ? risk.ProcessName
             : risk.ProcessName + ".exe";
         string fallback = risk.Active

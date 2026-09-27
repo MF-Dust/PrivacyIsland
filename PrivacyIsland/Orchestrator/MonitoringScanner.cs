@@ -17,7 +17,10 @@ internal sealed record MonitoringSnapshot(
     IReadOnlyList<TargetProcessInfo> MicrophoneProcesses,
     IReadOnlyList<CapabilityUsageProbe.CapabilityUsage> MicrophoneUsages,
     IReadOnlyList<string> ProcessNotes,
-    DateTime UpdatedUtc)
+    DateTime UpdatedUtc,
+    IReadOnlyList<TargetProcessInfo> LiveProcesses,
+    IReadOnlyList<TargetProcessInfo> AbilityProcesses,
+    IReadOnlyList<CapabilityUsageProbe.CapabilityUsage> CameraUsages)
 {
     public static MonitoringSnapshot Empty => new(
         null,
@@ -29,7 +32,10 @@ internal sealed record MonitoringSnapshot(
         Array.Empty<TargetProcessInfo>(),
         Array.Empty<CapabilityUsageProbe.CapabilityUsage>(),
         Array.Empty<string>(),
-        DateTime.MinValue);
+        DateTime.MinValue,
+        Array.Empty<TargetProcessInfo>(),
+        Array.Empty<TargetProcessInfo>(),
+        Array.Empty<CapabilityUsageProbe.CapabilityUsage>());
 }
 
 /// <summary>诊断页所需的低频数据；不参与每次监测采样。</summary>
@@ -69,8 +75,11 @@ internal sealed class MonitoringScanner
 
     public MonitoringSnapshot Scan(PluginConfig config)
     {
-        var cameraApps = _cameraProbe.InUseApps();
-        bool readMicrophone = config.EnableMicrophoneMonitoring || config.EnableRemoteControlMonitoring;
+        var cameraUsages = _cameraProbe.ReadUsages().Where(usage => usage.InUse).ToArray();
+        var cameraApps = cameraUsages.Select(usage => usage.ExecutablePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        bool readMicrophone = config.EnableMicrophoneMonitoring || config.EnableRemoteControlMonitoring || config.EnableLiveMonitoring;
         var microphoneUsages = readMicrophone
             ? _microphoneProbe.ReadUsages().Where(usage => usage.InUse).ToArray()
             : Array.Empty<CapabilityUsageProbe.CapabilityUsage>();
@@ -79,6 +88,9 @@ internal sealed class MonitoringScanner
         if (config.EnableScreenCaptureMonitoring) candidateNames.Add("screenCapture");
         if (config.EnableRemoteControlMonitoring || config.EnableMicrophoneMonitoring)
             candidateNames.Add("rtcRemoteDesktop");
+        if (config.EnableLiveMonitoring) candidateNames.Add("liveClient");
+        if (config.EnableDeviceCameraMonitoring || config.EnableMicrophoneMonitoring)
+            candidateNames.Add("SeewoAbility");
 
         var candidates = new List<TargetProcessInfo>();
         var notes = new List<string>();
@@ -109,18 +121,21 @@ internal sealed class MonitoringScanner
             foreach (var process in processes) process.Dispose();
         }
 
-        var screenPids = config.EnableScreenCaptureMonitoring
-            ? candidates.Where(c => c.ProcessName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase)).Select(c => c.Pid)
-            : Array.Empty<int>();
+        var connectionPids = new List<int>();
+        if (config.EnableScreenCaptureMonitoring)
+            connectionPids.AddRange(candidates.Where(c => c.ProcessName.Equals("screenCapture", StringComparison.OrdinalIgnoreCase)).Select(c => c.Pid));
+        if (config.EnableLiveMonitoring)
+            connectionPids.AddRange(candidates.Where(c => c.ProcessName.Equals("liveClient", StringComparison.OrdinalIgnoreCase)).Select(c => c.Pid));
 
         return BuildSnapshot(
             config,
             cameraApps,
             microphoneUsages,
             candidates,
-            TcpTable.CountEstablished(screenPids),
+            TcpTable.CountEstablished(connectionPids),
             notes,
-            DateTime.UtcNow);
+            DateTime.UtcNow,
+            cameraUsages);
     }
 
     internal static MonitoringSnapshot BuildSnapshot(
@@ -130,7 +145,8 @@ internal sealed class MonitoringScanner
         IEnumerable<TargetProcessInfo> processes,
         IReadOnlyDictionary<int, int> establishedTcpByPid,
         IEnumerable<string> notes,
-        DateTime updatedUtc)
+        DateTime updatedUtc,
+        IEnumerable<CapabilityUsageProbe.CapabilityUsage>? cameraUsages = null)
     {
         var processList = processes.ToArray();
         var cameraAppList = cameraApps.ToArray();
@@ -159,12 +175,20 @@ internal sealed class MonitoringScanner
                 : Array.Empty<TargetProcessInfo>(),
             microphoneUsages.ToArray(),
             notes.ToArray(),
-            updatedUtc);
+            updatedUtc,
+            config.EnableLiveMonitoring
+                ? processList.Where(p => p.ProcessName.Equals("liveClient", StringComparison.OrdinalIgnoreCase)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
+            config.EnableDeviceCameraMonitoring || config.EnableMicrophoneMonitoring
+                ? processList.Where(p => p.ProcessName.Equals("SeewoAbility", StringComparison.OrdinalIgnoreCase)).ToArray()
+                : Array.Empty<TargetProcessInfo>(),
+            (cameraUsages ?? Array.Empty<CapabilityUsageProbe.CapabilityUsage>()).ToArray());
     }
 
     static bool IsMicrophoneCandidate(TargetProcessInfo process)
         => process.ProcessName.Equals(TargetProcessName, StringComparison.OrdinalIgnoreCase) ||
-           process.ProcessName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase);
+           process.ProcessName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase) ||
+           process.ProcessName.Equals("SeewoAbility", StringComparison.OrdinalIgnoreCase);
 
     public MonitoringDiagnostics ScanDiagnostics(TargetProcessInfo? target)
     {

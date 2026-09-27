@@ -6,6 +6,9 @@ public enum PrivacyRiskKind
     RemoteControl,
     Microphone,
     Camera,
+    LiveBroadcast,
+    DeviceCamera,
+    WindowChange,
 }
 
 public sealed record PrivacyRiskSnapshot(
@@ -15,4 +18,5 @@ public sealed record PrivacyRiskSnapshot(
     DateTime? ProcessStartTimeUtc,
     string ProcessName,
     string ExecutablePath,
-    string Evidence);
+    string Evidence,
+    long SubjectId = 0);

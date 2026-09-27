@@ -18,7 +18,7 @@ public static class PrivacyIslandRuntime
     /// <summary>防护暂停状态变化——自动化触发器订阅此事件。</summary>
     public static event Action<bool>? ProtectionPauseChanged;
 
-    /// <summary>摄像头、屏幕采集、远程控制和麦克风风险状态变化。</summary>
+    /// <summary>摄像头、屏幕、远控、麦克风、直播、宿主摄像头和窗口异常的状态变化。</summary>
     public static event Action<PrivacyRiskSnapshot>? PrivacyRiskReceived;
 
     internal static void RaiseState(CaptureSnapshot s)
@@ -43,7 +43,12 @@ public static class PrivacyIslandRuntime
     public static bool RemoteControlActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.RemoteControl) ?? false;
     public static bool MicrophoneActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.Microphone) ?? false;
     public static bool CameraPrivacyActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.Camera) ?? false;
-    public static bool AnyPrivacyRiskActive => CameraPrivacyActive || ScreenCaptureActive || RemoteControlActive || MicrophoneActive;
+    public static bool LiveActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.LiveBroadcast) ?? false;
+    public static bool DeviceCameraActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.DeviceCamera) ?? false;
+    public static bool WindowChangeActive => Monitor?.IsPrivacyRiskActive(PrivacyRiskKind.WindowChange) ?? false;
+    public static bool AnyPrivacyRiskActive =>
+        CameraPrivacyActive || ScreenCaptureActive || RemoteControlActive || MicrophoneActive ||
+        LiveActive || DeviceCameraActive || WindowChangeActive;
 
     public static PluginConfig? Config => Monitor?.Config;
 
