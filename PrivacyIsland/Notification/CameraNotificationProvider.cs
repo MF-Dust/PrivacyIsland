@@ -97,17 +97,23 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
 
     void OnPrivacyRisk(PrivacyRiskSnapshot risk)
     {
-        if (!ShouldShowGenericPrivacyNotification(risk.Kind, risk.Active, Settings.NotifyOnPrivacyRisk)) return;
         var cfg = Settings;
+        if (!ShouldShowGenericPrivacyNotification(
+                risk.Kind, risk.Active, cfg.NotifyOnPrivacyRisk, cfg.NotifyOnPrivacyRiskEnded))
+            return;
         cfg.Clamp();
-        string text = FormatPrivacyRiskText(cfg.PrivacyRiskTextTemplate, risk);
+        string template = risk.Active ? cfg.PrivacyRiskTextTemplate : cfg.PrivacyRiskEndedTextTemplate;
+        string text = FormatPrivacyRiskText(template, risk);
+        var color = risk.Active
+            ? ParseColor(cfg.ColorOnStart, Color.FromRgb(255, 0, 0))
+            : ParseColor(cfg.ColorOnStop, Color.FromRgb(255, 105, 180));
         try
         {
             Channel(ChannelId).ShowNotification(new NotificationRequest
             {
                 MaskContent = NotificationContent.CreateSimpleTextContent(text, c =>
                 {
-                    c.Color = new SolidColorBrush(ParseColor(cfg.ColorOnStart, Color.FromRgb(255, 0, 0)));
+                    c.Color = new SolidColorBrush(color);
                     c.Duration = TimeSpan.FromSeconds(cfg.OverlayDurationSeconds);
                     c.IsSpeechEnabled = cfg.SpeechEnabled;
                     c.SpeechContent = text;
@@ -127,18 +133,27 @@ public class CameraNotificationProvider : NotificationProviderBase<CameraNotific
         _ => "未知风险",
     };
 
-    internal static bool ShouldShowGenericPrivacyNotification(PrivacyRiskKind kind, bool active, bool enabled)
-        => kind != PrivacyRiskKind.Camera && active && enabled;
+    internal static bool ShouldShowGenericPrivacyNotification(
+        PrivacyRiskKind kind,
+        bool active,
+        bool notifyOnStart,
+        bool notifyOnEnd)
+        => kind != PrivacyRiskKind.Camera && (active ? notifyOnStart : notifyOnEnd);
 
     internal static string FormatPrivacyRiskText(string? template, PrivacyRiskSnapshot risk)
     {
         string processName = risk.ProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
             ? risk.ProcessName
             : risk.ProcessName + ".exe";
-        return OrDefault(template, CameraNotificationSettings.DefaultPrivacyRiskTextTemplate)
+        string fallback = risk.Active
+            ? CameraNotificationSettings.DefaultPrivacyRiskTextTemplate
+            : CameraNotificationSettings.DefaultPrivacyRiskEndedTextTemplate;
+        return OrDefault(template, fallback)
             .Replace("{风险类型}", RiskName(risk.Kind), StringComparison.Ordinal)
             .Replace("{进程名}", processName, StringComparison.Ordinal)
-            .Replace("{PID}", risk.ProcessId.ToString(), StringComparison.Ordinal);
+            .Replace("{PID}", risk.ProcessId.ToString(), StringComparison.Ordinal)
+            .Replace("{依据}", risk.Evidence, StringComparison.Ordinal)
+            .Replace("{状态}", risk.Active ? "活动" : "已结束", StringComparison.Ordinal);
     }
 
     static string OrDefault(string? s, string fallback) => string.IsNullOrWhiteSpace(s) ? fallback : s.Trim();

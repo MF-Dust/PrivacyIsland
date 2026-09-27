@@ -5,19 +5,22 @@ namespace PrivacyIsland.Notification;
 
 public sealed class CameraNotificationSettings : ObservableRecipient
 {
-    public const string DefaultPrivacyRiskTextTemplate = "检测到 {风险类型}\n{进程名} (PID {PID}) 正在访问相关隐私能力";
+    public const string DefaultPrivacyRiskTextTemplate = "检测到 {风险类型}（{状态}）\n{进程名} (PID {PID}) 正在访问相关隐私能力\n{依据}";
+    public const string DefaultPrivacyRiskEndedTextTemplate = "{风险类型}已结束";
     public const int MaxPrivacyRiskTextLength = 120;
 
     bool _notifyOnStart = true;
     bool _notifyOnWatching = true;
     bool _notifyOnStop = true;
     bool _notifyOnPrivacyRisk = true;
+    bool _notifyOnPrivacyRiskEnded = true;
     bool _speechEnabled;
     int _overlayDurationSeconds = 5;
     string _textOnStart = "起风了";
     string _textOnWatching = "风好大";
     string _textOnStop = "风停了";
     string _privacyRiskTextTemplate = DefaultPrivacyRiskTextTemplate;
+    string _privacyRiskEndedTextTemplate = DefaultPrivacyRiskEndedTextTemplate;
     string _colorOnStart = "#FF0000";
     string _colorOnWatching = "#FFA500";
     string _colorOnStop = "#FF69B4";
@@ -27,6 +30,7 @@ public sealed class CameraNotificationSettings : ObservableRecipient
     public bool NotifyOnWatching { get => _notifyOnWatching; set => SetProperty(ref _notifyOnWatching, value); }
     public bool NotifyOnStop { get => _notifyOnStop; set => SetProperty(ref _notifyOnStop, value); }
     public bool NotifyOnPrivacyRisk { get => _notifyOnPrivacyRisk; set => SetProperty(ref _notifyOnPrivacyRisk, value); }
+    public bool NotifyOnPrivacyRiskEnded { get => _notifyOnPrivacyRiskEnded; set => SetProperty(ref _notifyOnPrivacyRiskEnded, value); }
     public bool SpeechEnabled { get => _speechEnabled; set => SetProperty(ref _speechEnabled, value); }
     public int OverlayDurationSeconds { get => _overlayDurationSeconds; set => SetProperty(ref _overlayDurationSeconds, value); }
 
@@ -34,6 +38,7 @@ public sealed class CameraNotificationSettings : ObservableRecipient
     public string TextOnWatching { get => _textOnWatching; set => SetProperty(ref _textOnWatching, value); }
     public string TextOnStop { get => _textOnStop; set => SetProperty(ref _textOnStop, value); }
     public string PrivacyRiskTextTemplate { get => _privacyRiskTextTemplate; set => SetProperty(ref _privacyRiskTextTemplate, value); }
+    public string PrivacyRiskEndedTextTemplate { get => _privacyRiskEndedTextTemplate; set => SetProperty(ref _privacyRiskEndedTextTemplate, value); }
 
     public string ColorOnStart { get => _colorOnStart; set => SetProperty(ref _colorOnStart, value); }
     public string ColorOnWatching { get => _colorOnWatching; set => SetProperty(ref _colorOnWatching, value); }
@@ -49,6 +54,9 @@ public sealed class CameraNotificationSettings : ObservableRecipient
         TextOnStop = Truncate(TextOnStop);
         PrivacyRiskTextTemplate = Truncate(
             OrDefault(PrivacyRiskTextTemplate, DefaultPrivacyRiskTextTemplate),
+            MaxPrivacyRiskTextLength);
+        PrivacyRiskEndedTextTemplate = Truncate(
+            OrDefault(PrivacyRiskEndedTextTemplate, DefaultPrivacyRiskEndedTextTemplate),
             MaxPrivacyRiskTextLength);
         ColorOnStart = OrDefault(ColorOnStart, "#FF0000");
         ColorOnWatching = OrDefault(ColorOnWatching, "#FFA500");

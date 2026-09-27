@@ -36,6 +36,24 @@ internal static class TcpTable
         return count;
     }
 
+    /// <summary>一次读取 TCP 表，只统计给定进程的 ESTABLISHED 连接数。</summary>
+    public static IReadOnlyDictionary<int, int> CountEstablished(IEnumerable<int> pids)
+    {
+        var counts = new Dictionary<int, int>();
+        foreach (int pid in pids)
+        {
+            if (pid > 0) counts[pid] = 0;
+        }
+        if (counts.Count == 0) return counts;
+
+        EnumerateRows(row =>
+        {
+            if (row.State == MibTcpStateEstab && counts.ContainsKey((int)row.OwningPid))
+                counts[(int)row.OwningPid]++;
+        });
+        return counts;
+    }
+
     static void EnumerateRows(Action<MibTcpRowOwnerPid> onRow)
     {
         int size = 0;

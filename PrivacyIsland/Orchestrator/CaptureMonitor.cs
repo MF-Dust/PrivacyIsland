@@ -248,6 +248,23 @@ public sealed class CaptureMonitor : IHostedService, IDisposable
         int processId)
         => PrivacyRiskCoordinator.ShouldPromptPrivacyRisk(mode, promptRequested, active, processId);
 
+    internal static bool ShouldConfirmScreenCapture(bool targetVerified, int establishedTcpCount)
+        => PrivacyRiskCoordinator.ShouldConfirmScreenCapture(targetVerified, establishedTcpCount);
+
+    internal static string DescribeRemoteSession(bool microphoneInUse, bool cameraInUse)
+        => PrivacyRiskCoordinator.DescribeRemoteSession(microphoneInUse, cameraInUse);
+
+    internal static bool ShouldTrackMicrophoneUse(
+        bool signedBySeewo,
+        string product,
+        string processName,
+        string originalFilename,
+        long consentStart,
+        long consentStop,
+        DateTime? processStartUtc)
+        => PrivacyRiskCoordinator.ShouldTrackMicrophoneUse(
+            signedBySeewo, product, processName, originalFilename, consentStart, consentStop, processStartUtc);
+
     internal static bool IsExpectedPrivacyTarget(
         PrivacyRiskKind kind,
         string processName,

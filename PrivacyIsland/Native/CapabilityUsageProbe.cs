@@ -14,8 +14,15 @@ internal sealed class CapabilityUsageProbe
         long LastUsedStop,
         bool MachineScope)
     {
-        public bool InUse => LastUsedStop == 0 && LastUsedStart != 0;
+        public bool InUse => IsCurrentlyInUse(LastUsedStart, LastUsedStop);
     }
+
+    /// <summary>
+    /// 同意项仍在使用：有开始时间，且尚未停止，或开始时间晚于停止时间。
+    /// 希沃 1.5.5 与 1.6.6 的桌面组件都写在 NonPackaged 同意项里。
+    /// </summary>
+    public static bool IsCurrentlyInUse(long lastUsedStart, long lastUsedStop)
+        => lastUsedStart != 0 && (lastUsedStop == 0 || lastUsedStart > lastUsedStop);
 
     public delegate IEnumerable<CapabilityUsage> ConsentStoreReader();
 
@@ -43,12 +50,18 @@ internal sealed class CapabilityUsageProbe
     {
         try
         {
-            return _read().Where(u => u.InUse)
+            return ReadUsages().Where(u => u.InUse)
                 .Select(u => u.ExecutablePath)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
         catch { return Array.Empty<string>(); }
+    }
+
+    public IReadOnlyList<CapabilityUsage> ReadUsages()
+    {
+        try { return _read().ToArray(); }
+        catch { return Array.Empty<CapabilityUsage>(); }
     }
 
     IEnumerable<CapabilityUsage> ReadFromRegistry()

@@ -121,9 +121,9 @@ internal sealed class ProtectionSettingsEditor
         };
         var camera = SettingsUi.Item(Icons.CameraFilled, "监测摄像头访问", "通过 hook 与 Windows 占用状态确认希沃摄像头访问", cameraStatus);
         var fuse = SettingsUi.Item(Icons.EyeFilled, "融合系统摄像头探测", "hook 未上报但系统显示摄像头在用时，也判定为活动并触发提醒和规则", _swFuseOsProbe);
-        var screen = SettingsUi.Item(Icons.EyeFilled, "监测屏幕采集", "检测希沃 screenCapture 组件及 Windows 现代屏幕捕获状态", _swScreenCapture);
-        var remote = SettingsUi.Item(Icons.ShieldErrorFilled, "监测远程控制", "检测希沃 rtcRemoteDesktop 远程桌面组件", _swRemoteControl);
-        var microphone = SettingsUi.Item(Icons.MegaphoneFilled, "监测麦克风", "检测希沃进程的 Windows 麦克风占用状态", _swMicrophone);
+        var screen = SettingsUi.Item(Icons.EyeFilled, "监测屏幕采集", "希沃 1.5.5 与 1.6.6 的 screenCapture 使用 GDI 截图 RPC，仅在已有客户端连接时提醒", _swScreenCapture);
+        var remote = SettingsUi.Item(Icons.ShieldErrorFilled, "监测远程控制", "希沃 1.5.5 与 1.6.6 的 rtcRemoteDesktop 会话，并标注麦克风或摄像头占用", _swRemoteControl);
+        var microphone = SettingsUi.Item(Icons.MegaphoneFilled, "监测麦克风", "只确认 media_capture 与 rtcRemoteDesktop 的麦克风占用，并忽略早于进程启动的记录", _swMicrophone);
         var response = SettingsUi.Item(Icons.WarningFilled, "风险处理方式", "仅提示不会弹出确认框，也不会自动结束进程", _privacyResponse);
         return SettingsUi.Expander(Icons.ShieldCheckmarkFilled, "隐私风险监测", "统一管理摄像头、屏幕、远控和麦克风风险", response, camera, fuse, screen, remote, microphone);
     }

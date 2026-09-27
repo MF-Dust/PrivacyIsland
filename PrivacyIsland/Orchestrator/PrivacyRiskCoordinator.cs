@@ -4,6 +4,7 @@ using Avalonia.Threading;
 using FluentAvalonia.UI.Controls;
 using PrivacyIsland.Config;
 using PrivacyIsland.Logging;
+using PrivacyIsland.Native;
 
 namespace PrivacyIsland.Orchestrator;
 
@@ -74,22 +75,11 @@ internal sealed class PrivacyRiskCoordinator
         }
 
         if (config.EnableScreenCaptureMonitoring)
-        {
-            AddProcessRisks(current, notes, PrivacyRiskKind.ScreenCapture, snapshot.ScreenProcesses,
-                "希沃屏幕采集组件已启动（进程信号，不代表已确认每次截图）");
-            AddCapabilityRisks(current, PrivacyRiskKind.ScreenCapture, snapshot.ScreenCapabilityProcesses,
-                "Windows 检测到无边框屏幕捕获正在使用");
-        }
+            AddScreenCaptureRisks(current, notes, snapshot);
         if (config.EnableRemoteControlMonitoring)
-        {
-            AddProcessRisks(current, notes, PrivacyRiskKind.RemoteControl, snapshot.RemoteProcesses,
-                "希沃远程桌面组件已启动");
-        }
+            AddRemoteControlRisks(current, notes, snapshot);
         if (config.EnableMicrophoneMonitoring)
-        {
-            AddCapabilityRisks(current, PrivacyRiskKind.Microphone, snapshot.MicrophoneCapabilityProcesses,
-                "Windows 检测到麦克风正在使用");
-        }
+            AddMicrophoneRisks(current, snapshot);
 
         List<PrivacyRiskSnapshot> changed = new();
         lock (_gate)
@@ -133,38 +123,80 @@ internal sealed class PrivacyRiskCoordinator
         });
     }
 
-    void AddProcessRisks(
+    void AddScreenCaptureRisks(
         IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
         ICollection<string> notes,
-        PrivacyRiskKind kind,
-        IEnumerable<TargetProcessInfo> processes,
-        string evidence)
+        MonitoringSnapshot snapshot)
     {
-        foreach (var info in processes)
+        foreach (var info in snapshot.ScreenProcesses)
         {
-            if (!IsExpectedPrivacyTarget(kind, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
+            if (!IsExpectedPrivacyTarget(
+                    PrivacyRiskKind.ScreenCapture, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
             {
                 notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
                 continue;
             }
 
-            var risk = ToPrivacyRisk(kind, info, evidence);
-            current[(kind, info.Pid, info.StartTimeUtc)] = risk;
+            int established = snapshot.EstablishedTcpByPid.TryGetValue(info.Pid, out int count) ? count : 0;
+            if (!ShouldConfirmScreenCapture(true, established))
+            {
+                notes.Add(ScreenCaptureIdleNote(info.ProcessName, info.Pid));
+                continue;
+            }
+
+            current[(PrivacyRiskKind.ScreenCapture, info.Pid, info.StartTimeUtc)] =
+                ToPrivacyRisk(PrivacyRiskKind.ScreenCapture, info, ScreenCaptureConfirmedEvidence);
         }
     }
 
-    static void AddCapabilityRisks(
+    void AddRemoteControlRisks(
         IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
-        PrivacyRiskKind kind,
-        IEnumerable<TargetProcessInfo> processes,
-        string evidence)
+        ICollection<string> notes,
+        MonitoringSnapshot snapshot)
     {
-        foreach (var info in processes)
+        foreach (var info in snapshot.RemoteProcesses)
         {
-            if (!IsSeewoCapabilityProcess(info)) continue;
-            current[(kind, info.Pid, info.StartTimeUtc)] = ToPrivacyRisk(kind, info, evidence);
+            if (!IsExpectedPrivacyTarget(
+                    PrivacyRiskKind.RemoteControl, info.ProcessName, info.Product, info.OriginalFilename, info.IsSignedBySeewo))
+            {
+                notes.Add($"{info.ProcessName}.exe(pid={info.Pid}) 未通过希沃数字签名/产品校验");
+                continue;
+            }
+
+            bool microphone = IsMicrophoneActive(snapshot, info);
+            bool camera = CapabilityPathMatches(snapshot.CameraInUseApps, info.ExecutablePath);
+            current[(PrivacyRiskKind.RemoteControl, info.Pid, info.StartTimeUtc)] =
+                ToPrivacyRisk(PrivacyRiskKind.RemoteControl, info, DescribeRemoteSession(microphone, camera));
         }
     }
+
+    void AddMicrophoneRisks(
+        IDictionary<(PrivacyRiskKind Kind, int Pid, DateTime? StartTimeUtc), PrivacyRiskSnapshot> current,
+        MonitoringSnapshot snapshot)
+    {
+        foreach (var info in snapshot.MicrophoneProcesses)
+        {
+            if (!IsMicrophoneActive(snapshot, info)) continue;
+            current[(PrivacyRiskKind.Microphone, info.Pid, info.StartTimeUtc)] =
+                ToPrivacyRisk(PrivacyRiskKind.Microphone, info, MicrophoneEvidence);
+        }
+    }
+
+    static bool IsMicrophoneActive(MonitoringSnapshot snapshot, TargetProcessInfo info)
+        => snapshot.MicrophoneUsages.Any(usage =>
+            string.Equals(usage.ExecutablePath, info.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+            ShouldTrackMicrophoneUse(
+                info.IsSignedBySeewo,
+                info.Product,
+                info.ProcessName,
+                info.OriginalFilename,
+                usage.LastUsedStart,
+                usage.LastUsedStop,
+                info.StartTimeUtc));
+
+    static bool CapabilityPathMatches(IEnumerable<string> paths, string executablePath)
+        => !string.IsNullOrWhiteSpace(executablePath) &&
+           paths.Any(path => string.Equals(path, executablePath, StringComparison.OrdinalIgnoreCase));
 
     void Publish(PrivacyRiskSnapshot risk, bool prompt, PluginConfig config)
     {
@@ -256,9 +288,11 @@ internal sealed class PrivacyRiskCoordinator
                 !string.Equals(current.ExecutablePath, risk.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                 return PluginOperationResult.Fail("进程身份已变化，已拒绝终止以避免 PID 复用误杀");
 
-            bool verified = IsExpectedPrivacyTarget(
-                risk.Kind, current.ProcessName, current.Product, current.OriginalFilename, current.IsSignedBySeewo) ||
-                IsSeewoCapabilityProcess(current);
+            bool verified = risk.Kind == PrivacyRiskKind.Microphone
+                ? IsMicrophoneCaptureTarget(
+                    current.ProcessName, current.Product, current.OriginalFilename, current.IsSignedBySeewo)
+                : IsExpectedPrivacyTarget(
+                    risk.Kind, current.ProcessName, current.Product, current.OriginalFilename, current.IsSignedBySeewo);
             if (!verified) return PluginOperationResult.Fail("进程未通过希沃数字签名和产品校验，已拒绝终止");
 
             process.Kill(entireProcessTree: true);
@@ -280,6 +314,59 @@ internal sealed class PrivacyRiskCoordinator
         bool active,
         int processId)
         => mode == PrivacyRiskResponseMode.Prompt && promptRequested && active && processId > 0;
+
+    /// <summary>希沃 1.5.5 与 1.6.6 的 screenCapture 都是 GDI 截图 RPC，仅在已有客户端连接时确认。</summary>
+    internal static bool ShouldConfirmScreenCapture(bool targetVerified, int establishedTcpCount)
+        => targetVerified && establishedTcpCount > 0;
+
+    internal const string ScreenCaptureConfirmedEvidence = "希沃截图服务已有 RPC 客户端连接";
+    internal const string MicrophoneEvidence = "Windows 检测到麦克风正在使用";
+
+    internal static string ScreenCaptureIdleNote(string processName, int pid)
+        => $"{processName}.exe(pid={pid}) 截图服务在监听，尚无 RPC 客户端";
+
+    /// <summary>两个版本的 rtcRemoteDesktop 都用 WebRTC，进程即会话；UDP 不作为必要条件。</summary>
+    internal static string DescribeRemoteSession(bool microphoneInUse, bool cameraInUse) => (microphoneInUse, cameraInUse) switch
+    {
+        (true, true) => "远控组件会话已启动，正在采集麦克风和摄像头",
+        (true, false) => "远控组件会话已启动，正在采集麦克风",
+        (false, true) => "远控组件会话已启动，正在采集摄像头",
+        _ => "远控组件会话已启动",
+    };
+
+    internal static bool IsMicrophoneCaptureProcess(string processName, string originalFilename)
+        => processName.Equals("media_capture", StringComparison.OrdinalIgnoreCase) &&
+           originalFilename.Equals("media_capture.exe", StringComparison.OrdinalIgnoreCase) ||
+           processName.Equals("rtcRemoteDesktop", StringComparison.OrdinalIgnoreCase) &&
+           originalFilename.Equals("rtcRemoteDesktop.exe", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsMicrophoneCaptureTarget(
+        string processName,
+        string product,
+        string originalFilename,
+        bool signedBySeewo)
+        => signedBySeewo &&
+           product.Contains("希沃", StringComparison.OrdinalIgnoreCase) &&
+           IsMicrophoneCaptureProcess(processName, originalFilename);
+
+    /// <summary>
+    /// 麦克风只认 1.5.5 / 1.6.6 中实际调用 WASAPI 采集的签名进程。
+    /// 同意项开始时间早于本次进程启动的记录视为上次残留。
+    /// </summary>
+    internal static bool ShouldTrackMicrophoneUse(
+        bool signedBySeewo,
+        string product,
+        string processName,
+        string originalFilename,
+        long consentStart,
+        long consentStop,
+        DateTime? processStartUtc)
+    {
+        if (!IsMicrophoneCaptureTarget(processName, product, originalFilename, signedBySeewo)) return false;
+        if (!CapabilityUsageProbe.IsCurrentlyInUse(consentStart, consentStop)) return false;
+        if (processStartUtc is DateTime start && consentStart < start.ToFileTimeUtc()) return false;
+        return true;
+    }
 
     internal static bool IsExpectedPrivacyTarget(
         PrivacyRiskKind kind,
@@ -306,9 +393,6 @@ internal sealed class PrivacyRiskCoordinator
             _ => false,
         };
     }
-
-    static bool IsSeewoCapabilityProcess(TargetProcessInfo info)
-        => info.IsSignedBySeewo && info.Product.Contains("希沃", StringComparison.OrdinalIgnoreCase);
 
     static PrivacyRiskSnapshot ToPrivacyRisk(PrivacyRiskKind kind, TargetProcessInfo info, string evidence)
         => new(kind, true, info.Pid, info.StartTimeUtc, info.ProcessName, info.ExecutablePath, evidence);
